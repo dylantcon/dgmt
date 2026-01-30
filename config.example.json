@@ -1,0 +1,24 @@
+{
+    "_comment": "dgmt configuration - Dylan's Google [Drive] Management Tool",
+
+    "watch_paths": [
+        "~/Obsidian"
+    ],
+
+    "rclone_remote": "dgmt",
+    "rclone_dest": "Obsidian-Backup",
+    "rclone_flags": ["--verbose"],
+
+    "debounce_seconds": 30,
+    "max_wait_seconds": 300,
+    "health_check_interval": 60,
+
+    "syncthing_api": "http://localhost:8384",
+    "syncthing_api_key": null,
+
+    "log_file": "~/.dgmt/dgmt.log",
+    "log_level": "INFO",
+
+    "restart_syncthing_on_failure": true,
+    "syncthing_exe": "syncthing"
+}
