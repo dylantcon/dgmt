@@ -79,6 +79,8 @@ def expand_paths(config: dict) -> dict:
         str(Path(p).expanduser()) for p in config["watch_paths"]
     ]
     config["log_file"] = str(Path(config["log_file"]).expanduser())
+    if config.get("syncthing_exe"):
+        config["syncthing_exe"] = str(Path(config["syncthing_exe"]).expanduser())
     return config
 
 
@@ -160,37 +162,28 @@ class SyncthingMonitor:
         except requests.RequestException:
             return False
 
-    def restart(self) -> bool:
-        """Attempt to restart Syncthing."""
-        self.logger.warning("Attempting to restart Syncthing...")
+    def start(self) -> bool:
+        """Start Syncthing if not running."""
+        self.logger.info("Starting Syncthing...")
 
         if sys.platform == "win32":
             # Suppress console windows
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 0  # SW_HIDE = 0
-            creationflags = subprocess.CREATE_NO_WINDOW
 
-            # Kill and restart on Windows
-            subprocess.run(["taskkill", "/f", "/im", "syncthing.exe"],
-                           capture_output=True, startupinfo=startupinfo,
-                           creationflags=creationflags)
-            time.sleep(2)
             subprocess.Popen(
                 [self.config["syncthing_exe"], "-no-browser"],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
                 startupinfo=startupinfo
             )
         else:
-            # systemd on Linux
+            # Try systemd first, fall back to direct start
             result = subprocess.run(
-                ["systemctl", "--user", "restart", "syncthing"],
+                ["systemctl", "--user", "start", "syncthing"],
                 capture_output=True
             )
             if result.returncode != 0:
-                # Try direct restart
-                subprocess.run(["pkill", "syncthing"], capture_output=True)
-                time.sleep(2)
                 subprocess.Popen(
                     [self.config["syncthing_exe"], "-no-browser"],
                     start_new_session=True
@@ -199,6 +192,27 @@ class SyncthingMonitor:
         # Wait and verify
         time.sleep(5)
         return self.is_healthy()
+
+    def restart(self) -> bool:
+        """Restart Syncthing (kill then start)."""
+        self.logger.warning("Restarting Syncthing...")
+
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0  # SW_HIDE = 0
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+            # Kill existing
+            subprocess.run(["taskkill", "/f", "/im", "syncthing.exe"],
+                           capture_output=True, startupinfo=startupinfo,
+                           creationflags=creationflags)
+            time.sleep(2)
+        else:
+            subprocess.run(["pkill", "syncthing"], capture_output=True)
+            time.sleep(2)
+
+        return self.start()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -439,14 +453,23 @@ class DGMT:
             self.rclone.pull(path, timeout=timeout)
 
     def _health_check_loop(self):
-        """Periodically check Syncthing health."""
+        """Periodically check Syncthing health and ensure it's running."""
+        # Initial check - start Syncthing if enabled and not running
+        if self.config.get("restart_syncthing_on_failure", True):
+            if not self.syncthing.is_healthy():
+                self.logger.info("Syncthing not running, starting it...")
+                if self.syncthing.start():
+                    self.logger.info("Syncthing started successfully")
+                else:
+                    self.logger.error("Failed to start Syncthing")
+
         while self._running:
             time.sleep(self.config["health_check_interval"])
 
-            if not self.syncthing.is_healthy():
-                self.logger.warning("Syncthing not responding!")
+            if self.config.get("restart_syncthing_on_failure", True):
+                if not self.syncthing.is_healthy():
+                    self.logger.warning("Syncthing not responding!")
 
-                if self.config["restart_syncthing_on_failure"]:
                     if self.syncthing.restart():
                         self.logger.info("Syncthing restarted successfully")
                     else:
