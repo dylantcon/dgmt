@@ -173,7 +173,7 @@ class SyncthingMonitor:
             startupinfo.wShowWindow = 0  # SW_HIDE = 0
 
             subprocess.Popen(
-                [self.config["syncthing_exe"], "-no-browser"],
+                [self.config["syncthing_exe"], "serve", "--no-browser"],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
                 startupinfo=startupinfo
             )
@@ -185,7 +185,7 @@ class SyncthingMonitor:
             )
             if result.returncode != 0:
                 subprocess.Popen(
-                    [self.config["syncthing_exe"], "-no-browser"],
+                    [self.config["syncthing_exe"], "serve", "--no-browser"],
                     start_new_session=True
                 )
 
