@@ -19,6 +19,6 @@
     "log_file": "~/.dgmt/dgmt.log",
     "log_level": "INFO",
 
-    "restart_syncthing_on_failure": true,
-    "syncthing_exe": "syncthing"
+    "restart_syncthing_on_failure": false,
+    "syncthing_exe": "~/scoop/apps/syncthing/current/syncthing.exe"
 }

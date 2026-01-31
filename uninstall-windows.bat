@@ -10,11 +10,11 @@ set INSTALL_DIR=%USERPROFILE%\.dgmt
 
 REM Stop the scheduled task
 echo Stopping dgmt task...
-schtasks /end /tn dgmt >nul 2>&1
+schtasks /end /tn dgmt
 
 REM Remove scheduled task
 echo Removing scheduled task...
-schtasks /delete /tn dgmt /f >nul 2>&1
+schtasks /delete /tn dgmt /f
 
 REM Remove installation directory
 if exist "%INSTALL_DIR%" (

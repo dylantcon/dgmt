@@ -56,7 +56,7 @@ CONFIG_DEFAULT = {
 
     # Behavior
     "restart_syncthing_on_failure": True,
-    "syncthing_exe": "syncthing",  # Or full path on Windows
+    "syncthing_exe": "~/scoop/apps/syncthing/current/syncthing.exe",
 }
 
 
