@@ -1,0 +1,2 @@
+[console_scripts]
+dgmt = dgmt.cli.main:main
