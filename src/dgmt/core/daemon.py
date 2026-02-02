@@ -14,7 +14,7 @@ from dgmt.backends import get_backend
 from dgmt.backends.base import Backend
 from dgmt.core.config import Config, ConfigData
 from dgmt.core.shutdown import ShutdownHandler, kill_syncthing
-from dgmt.core.watcher import DebouncedWatcher
+from dgmt.core.watcher import ChangeSet, DebouncedWatcher
 from dgmt.utils.logging import setup_logging, get_logger
 from dgmt.utils.paths import get_config_file
 
@@ -144,7 +144,7 @@ class Daemon:
             )
             self._backends["rclone"] = rclone
 
-    def _sync_all(self) -> None:
+    def _sync_all(self, changes: Optional[ChangeSet] = None) -> None:
         """Sync all watched paths using rclone (if enabled)."""
         rclone = self._backends.get("rclone")
         if not rclone:
@@ -159,11 +159,34 @@ class Daemon:
                 if not syncthing.wait_for_idle(timeout=120):
                     self._logger.warning("Syncthing still busy, proceeding with rclone anyway")
 
+        # Apply renames to remote before bisync
+        if changes and changes.renamed:
+            self._apply_renames(changes.renamed)
+
         for path in self._config.hub.watch_paths:
             try:
                 rclone.sync(str(path))
             except Exception as e:
                 self._logger.error(f"Sync failed for {path}: {e}")
+
+    def _apply_renames(self, renames: dict[str, str]) -> None:
+        """Apply file renames to the remote before bisync."""
+        rclone = self._backends.get("rclone")
+        if not rclone:
+            return
+
+        for old_path, new_path in renames.items():
+            # Find which watch path this rename belongs to
+            old_p = Path(old_path)
+            for watch_path in self._config.hub.watch_paths:
+                try:
+                    old_p.relative_to(watch_path)
+                    # This rename belongs to this watch path
+                    if rclone.rename(str(watch_path), old_path, new_path):
+                        self._logger.info(f"Remote rename: {old_path} -> {new_path}")
+                    break
+                except ValueError:
+                    continue
 
     def _pull_all(self) -> None:
         """Pull all watched paths from remote."""

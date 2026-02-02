@@ -240,6 +240,61 @@ class RcloneBackend(Backend):
                 self._logger.error(f"Push error: {e}")
                 return False
 
+    def rename(
+        self, watch_path: str, old_local_path: str, new_local_path: str, timeout: int = 30
+    ) -> bool:
+        """
+        Rename a file on the remote to match a local rename.
+
+        Args:
+            watch_path: The watched directory root.
+            old_local_path: The old local file path.
+            new_local_path: The new local file path.
+        """
+        with self._lock:
+            try:
+                # Calculate relative paths from watch_path
+                watch = Path(watch_path)
+                old_rel = Path(old_local_path).relative_to(watch)
+                new_rel = Path(new_local_path).relative_to(watch)
+
+                # Build remote paths
+                remote_base = self._get_remote_path(watch_path)
+                old_remote = f"{remote_base}/{old_rel.as_posix()}"
+                new_remote = f"{remote_base}/{new_rel.as_posix()}"
+
+                cmd = ["rclone", "moveto", old_remote, new_remote, "--verbose"]
+
+                self._logger.info(f"Remote rename: {old_remote} -> {new_remote}")
+
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    **self._get_subprocess_args(),
+                )
+
+                if result.returncode == 0:
+                    return True
+                else:
+                    # File might not exist on remote yet, that's OK
+                    if "not found" in result.stderr.lower() or "no such" in result.stderr.lower():
+                        self._logger.debug(f"Remote file not found, skip rename: {old_remote}")
+                        return True
+                    self._logger.error(f"Remote rename failed: {result.stderr}")
+                    return False
+
+            except ValueError as e:
+                self._logger.error(f"Path calculation error: {e}")
+                return False
+            except subprocess.TimeoutExpired:
+                self._logger.error("Remote rename timed out")
+                return False
+            except Exception as e:
+                self._logger.error(f"Remote rename error: {e}")
+                return False
+
     def __repr__(self) -> str:
         return f"RcloneBackend(remote={self._remote!r}, dest={self._dest!r})"
 

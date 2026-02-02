@@ -3,14 +3,43 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional, Set
 
-from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.events import (
+    FileSystemEvent,
+    FileSystemEventHandler,
+    FileCreatedEvent,
+    FileDeletedEvent,
+    FileModifiedEvent,
+    FileMovedEvent,
+)
 from watchdog.observers import Observer
 
 from dgmt.utils.logging import get_logger
+
+
+@dataclass
+class ChangeSet:
+    """Accumulated file changes during debounce period."""
+
+    created: set[str] = field(default_factory=set)
+    modified: set[str] = field(default_factory=set)
+    deleted: set[str] = field(default_factory=set)
+    renamed: dict[str, str] = field(default_factory=dict)  # old_path -> new_path
+
+    def clear(self) -> None:
+        """Clear all tracked changes."""
+        self.created.clear()
+        self.modified.clear()
+        self.deleted.clear()
+        self.renamed.clear()
+
+    def is_empty(self) -> bool:
+        """Check if there are any tracked changes."""
+        return not (self.created or self.modified or self.deleted or self.renamed)
 
 
 class DebouncedHandler(FileSystemEventHandler):
@@ -24,7 +53,7 @@ class DebouncedHandler(FileSystemEventHandler):
 
     def __init__(
         self,
-        callback: Callable[[], None],
+        callback: Callable[[ChangeSet], None],
         debounce_seconds: float = 30.0,
         max_wait_seconds: float = 300.0,
         ignore_patterns: Optional[Set[str]] = None,
@@ -34,6 +63,7 @@ class DebouncedHandler(FileSystemEventHandler):
 
         Args:
             callback: Function to call when sync should be triggered.
+                      Receives a ChangeSet with accumulated changes.
             debounce_seconds: Wait this long after last change before syncing.
             max_wait_seconds: Force sync after this long even if changes continue.
             ignore_patterns: Set of directory/file name patterns to ignore.
@@ -49,6 +79,7 @@ class DebouncedHandler(FileSystemEventHandler):
         self._first_event: Optional[datetime] = None
         self._timer: Optional[threading.Timer] = None
         self._lock = threading.Lock()
+        self._changes = ChangeSet()
 
     def _should_ignore(self, path: str) -> bool:
         """Check if a path should be ignored."""
@@ -74,7 +105,9 @@ class DebouncedHandler(FileSystemEventHandler):
 
             if self._first_event is None:
                 self._first_event = now
-                self.logger.debug(f"Change detected: {event.src_path}")
+
+            # Track the specific change type
+            self._track_event(event)
 
             # Cancel existing timer
             if self._timer:
@@ -94,16 +127,67 @@ class DebouncedHandler(FileSystemEventHandler):
                 self._timer.daemon = True
                 self._timer.start()
 
+    def _track_event(self, event: FileSystemEvent) -> None:
+        """Track the specific type of file system event."""
+        src = event.src_path
+
+        if isinstance(event, FileMovedEvent):
+            dest = event.dest_path
+            self.logger.debug(f"Rename detected: {src} -> {dest}")
+            # Track as rename
+            self._changes.renamed[src] = dest
+            # If the source was previously created in this batch, update it
+            if src in self._changes.created:
+                self._changes.created.discard(src)
+                self._changes.created.add(dest)
+            # Remove from deleted if dest was there
+            self._changes.deleted.discard(dest)
+
+        elif isinstance(event, FileCreatedEvent):
+            self.logger.debug(f"Create detected: {src}")
+            self._changes.created.add(src)
+            # If it was deleted earlier in this batch, it's now modified
+            if src in self._changes.deleted:
+                self._changes.deleted.discard(src)
+                self._changes.modified.add(src)
+
+        elif isinstance(event, FileDeletedEvent):
+            self.logger.debug(f"Delete detected: {src}")
+            # If it was created in this batch, just remove the create
+            if src in self._changes.created:
+                self._changes.created.discard(src)
+            else:
+                self._changes.deleted.add(src)
+            self._changes.modified.discard(src)
+
+        elif isinstance(event, FileModifiedEvent):
+            self.logger.debug(f"Modify detected: {src}")
+            # Only track if not already tracked as created
+            if src not in self._changes.created:
+                self._changes.modified.add(src)
+
     def _trigger_callback(self) -> None:
-        """Trigger the sync callback."""
+        """Trigger the sync callback with accumulated changes."""
         with self._lock:
             self._first_event = None
             self._last_event = None
             self._timer = None
+            # Take a snapshot of changes and clear
+            changes = ChangeSet(
+                created=self._changes.created.copy(),
+                modified=self._changes.modified.copy(),
+                deleted=self._changes.deleted.copy(),
+                renamed=self._changes.renamed.copy(),
+            )
+            self._changes.clear()
 
-        self.logger.info("Quiet period reached, triggering sync")
+        self.logger.info(
+            f"Quiet period reached, triggering sync "
+            f"(+{len(changes.created)} ~{len(changes.modified)} "
+            f"-{len(changes.deleted)} >{len(changes.renamed)})"
+        )
         try:
-            self.callback()
+            self.callback(changes)
         except Exception as e:
             self.logger.error(f"Callback error: {e}")
 
@@ -120,8 +204,8 @@ class DebouncedWatcher:
     High-level file watcher with debouncing support.
 
     Example:
-        def on_change():
-            print("Files changed!")
+        def on_change(changes: ChangeSet):
+            print(f"Files changed: {changes}")
 
         watcher = DebouncedWatcher(on_change, debounce_seconds=30)
         watcher.watch("~/Documents")
@@ -133,7 +217,7 @@ class DebouncedWatcher:
 
     def __init__(
         self,
-        callback: Callable[[], None],
+        callback: Callable[[ChangeSet], None],
         debounce_seconds: float = 30.0,
         max_wait_seconds: float = 300.0,
         ignore_patterns: Optional[Set[str]] = None,
@@ -143,6 +227,7 @@ class DebouncedWatcher:
 
         Args:
             callback: Function to call when changes are detected.
+                      Receives a ChangeSet with accumulated changes.
             debounce_seconds: Wait this long after last change.
             max_wait_seconds: Force callback after this long.
             ignore_patterns: Patterns to ignore.
