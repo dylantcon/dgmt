@@ -102,6 +102,11 @@ class WindowsServiceManager(ServiceManager):
     def install(self, python_path: Optional[str] = None) -> bool:
         """Install dgmt as a Windows scheduled task."""
         python = python_path or sys.executable
+        # Use pythonw.exe to avoid console window
+        if python.endswith("python.exe"):
+            pythonw = python.replace("python.exe", "pythonw.exe")
+            if os.path.exists(pythonw):
+                python = pythonw
         username = os.environ.get("USERNAME", "")
         working_dir = str(Path.home())
 

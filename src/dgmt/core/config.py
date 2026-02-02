@@ -155,7 +155,8 @@ class Config(FluentBuilder["Config"]):
                 st = backends["syncthing"]
                 self._data.backends.syncthing_api = st.get("api", "http://localhost:8384")
                 self._data.backends.syncthing_api_key = st.get("api_key")
-                self._data.backends.syncthing_exe = st.get("exe")
+                exe = st.get("exe")
+                self._data.backends.syncthing_exe = str(expand_path(exe)) if exe else None
                 self._data.backends.stop_syncthing_on_exit = st.get(
                     "stop_on_exit", True
                 )

@@ -29,241 +29,231 @@ Requires-Dist: pytest-cov>=4.0.0; extra == "dev"
 Requires-Dist: ruff>=0.1.0; extra == "dev"
 Requires-Dist: mypy>=1.0.0; extra == "dev"
 
-# dgmt - Dylan's Google [Drive] Management Tool
+# dgmt - Dylan's General Management Tool
 
-Unified sync daemon that combines:
-- **Syncthing** for peer-to-peer sync between devices
-- **rclone** for backup to Google Drive
-- **Automatic health monitoring** to restart hung services
+Hub-and-spoke sync orchestrator supporting multiple backends (Syncthing, SFTP, rclone).
 
 ## Architecture
 
-### How it works
+```mermaid
+graph TB
+    Cloud[(Cloud<br/>rclone)]
+    Hub[HUB<br/>laptop]
+    Spoke1[Spoke<br/>PC]
+    Spoke2[Spoke<br/>server]
+    Spoke3[Spoke<br/>NAS]
+
+    Cloud -.->|optional| Hub
+    Hub <-->|Syncthing| Spoke1
+    Hub <-->|SFTP| Spoke2
+    Hub <-->|Syncthing| Spoke3
+```
+
+- **Hub**: Machine running dgmt in full mode
+- **Spokes**: Remote machines syncing with the hub via configured backend
+- **Backends**: Syncthing (P2P), SFTP/rsync (direct), rclone (cloud)
+
+### Daemon Flow
 
 ```mermaid
 graph TB
     subgraph startup["On Startup"]
-        PULL[Pull from Drive]
+        PULL[Pull from remote]
         BISYNC[Bidirectional sync]
         PULL --> BISYNC
     end
 
     subgraph running["While Running"]
         W[watchdog<br/>monitors files]
-        D[debouncer<br/>waits 30s quiet]
-        SYNC[rclone bisync<br/>push to Drive]
+        D[debouncer<br/>waits for quiet period]
+        SYNC[sync to backends]
         W --> D --> SYNC
     end
 
-    subgraph optional["Optional"]
-        H[Syncthing monitor<br/>restart if hung]
+    subgraph background["Background"]
+        H[Syncthing health monitor]
+        C[Config file watcher<br/>hot reload]
     end
 
     startup --> running
 ```
 
-### Multi-Device Sync (via Google Drive)
-
-```mermaid
-sequenceDiagram
-    participant Desktop
-    participant Drive as Google Drive
-    participant Surface
-
-    Note over Desktop: You edit files
-    Desktop->>Drive: dgmt pushes changes
-    Note over Desktop: You shut down, go to class
-
-    Note over Surface: You boot up
-    Drive->>Surface: dgmt pulls on startup
-    Note over Surface: You have latest changes!
-
-    Note over Surface: You edit files in class
-    Surface->>Drive: dgmt pushes changes
-
-    Note over Desktop: Later, you boot up
-    Drive->>Desktop: dgmt pulls on startup
-```
-
-### Optional: Syncthing for LAN Sync
-
-If both devices are on the same network and online simultaneously, Syncthing provides faster direct sync without cloud roundtrip. This is optional—Drive handles everything if devices are never online together.
-
-```mermaid
-graph LR
-    subgraph home["Same Network"]
-        Desktop <-->|"Syncthing<br/>(fast, direct)"| Surface
-    end
-
-    Desktop -->|"dgmt"| Drive[(Google Drive)]
-    Surface -->|"dgmt"| Drive
-```
-
-**Key insight:** Google Drive is the source of truth. Syncthing is a nice-to-have for faster LAN sync, not a requirement.
-
-## Prerequisites
-
-1. **Python 3.8+**
-2. **rclone** configured with a remote (required)
-3. **Syncthing** (optional, for faster LAN sync between devices)
-
-### Setting up rclone (required)
-
-```bash
-# Install
-scoop install rclone      # Windows
-sudo apt install rclone   # Debian/Ubuntu
-
-# Configure (creates 'dgmt' remote)
-rclone config
-# → n (new)
-# → dgmt
-# → drive (Google Drive)
-# → follow prompts for OAuth or service account
-```
-
-### Setting up Syncthing (optional)
-
-If you want faster sync when devices are on the same network:
-
-```bash
-# Install
-scoop install syncthing   # Windows
-sudo apt install syncthing   # Debian/Ubuntu
-
-# Start and open web UI
-syncthing
-# → http://localhost:8384
-
-# Add your devices and share your Obsidian folder between them
-```
-
 ## Installation
 
-### Windows
-
-```cmd
-cd dgmt
-install-windows.bat
+```bash
+pip install -e .
+dgmt init
 ```
 
-This will:
-- Install to `%USERPROFILE%\.dgmt`
-- Add `dgmt` command to PATH
-- Create startup shortcut for auto-run
-
-### Linux
+## CLI
 
 ```bash
-cd dgmt
-chmod +x install-linux.sh
-./install-linux.sh
-```
+# Service
+dgmt install          # Install as system service
+dgmt uninstall        # Remove service
+dgmt start            # Start service
+dgmt stop             # Stop service
+dgmt status           # Show status
+dgmt run              # Run in foreground
 
-This will:
-- Install to `~/.dgmt`
-- Create systemd user service
-- Add `dgmt` command to PATH
+# Sync
+dgmt sync             # Manual sync
+dgmt sync --pull      # Pull only
+dgmt sync --push      # Push only
+
+# Remote machines
+dgmt remote add <host> [--backend sftp|syncthing] [--folder ~/path]
+dgmt remote remove <host>
+dgmt remote list
+dgmt remote status <host>
+dgmt remote ssh <host>
+
+# Configuration
+dgmt config           # Show config
+dgmt config edit      # Open in $EDITOR
+dgmt config set <key> <value>
+dgmt config add-watch <path>
+dgmt config backend <name>
+```
 
 ## Configuration
 
-Edit `~/.dgmt/config.json`:
+`~/.dgmt/config.json`:
 
 ```json
 {
-    "watch_paths": [
-        "~/Obsidian",
-        "~/Documents/notes"
-    ],
-
-    "rclone_remote": "dgmt",
-    "rclone_dest": "Backups",
-
+  "hub": {
+    "watch_paths": ["~/Obsidian"],
     "debounce_seconds": 30,
     "max_wait_seconds": 300,
-
-    "log_level": "INFO"
+    "health_check_interval": 60,
+    "pull_on_startup": true
+  },
+  "defaults": {
+    "backend": "syncthing"
+  },
+  "spokes": {
+    "webserver": {
+      "backend": "sftp",
+      "remote_path": "/home/user/notes",
+      "enabled": true
+    }
+  },
+  "backends": {
+    "rclone": {
+      "remote": "gdrive",
+      "dest": "Backup",
+      "enabled": false
+    },
+    "syncthing": {
+      "api": "http://localhost:8384",
+      "stop_on_exit": true,
+      "restart_on_failure": true
+    }
+  },
+  "logging": {
+    "file": "~/.dgmt/dgmt.log",
+    "level": "INFO"
+  }
 }
 ```
 
-### Options
+| Key | Description |
+|-----|-------------|
+| `hub.watch_paths` | Folders to monitor for changes |
+| `hub.debounce_seconds` | Quiet period before triggering sync |
+| `hub.max_wait_seconds` | Force sync after this duration |
+| `hub.health_check_interval` | Syncthing health check frequency |
+| `defaults.backend` | Default backend for new spokes |
+| `spokes.<name>` | Remote machine configurations |
+| `backends.rclone.enabled` | Enable cloud backup via rclone |
+| `backends.syncthing.stop_on_exit` | Kill Syncthing when dgmt stops |
+| `logging.level` | DEBUG, INFO, WARNING, ERROR |
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `watch_paths` | `["~/Obsidian"]` | Folders to watch and sync |
-| `rclone_remote` | `"dgmt"` | Name of your rclone remote |
-| `rclone_dest` | `"Obsidian-Backup"` | Destination folder on remote |
-| `pull_on_startup` | `true` | Pull latest from Drive before watching |
-| `startup_pull_timeout` | `120` | Timeout for startup pull (seconds) |
-| `debounce_seconds` | `30` | Wait this long after last change before syncing |
-| `max_wait_seconds` | `300` | Force sync after this long even if changes continue |
-| `health_check_interval` | `60` | Check Syncthing health every N seconds |
-| `restart_syncthing_on_failure` | `true` | Auto-restart Syncthing if it hangs (set `false` to disable) |
-| `log_level` | `"INFO"` | DEBUG, INFO, WARNING, ERROR |
+**Hot reload**: The daemon watches `config.json` and applies changes automatically. No restart required.
 
-## Usage
+## Fluent Configuration API
 
-### Manual
+Configure dgmt programmatically in Python:
 
-```bash
-dgmt              # Start daemon in foreground
-dgmt init         # Create config file
-dgmt config       # Show current config
+```python
+from dgmt import Config
+
+config = (
+    Config()
+    .watch("~/Obsidian", "~/Documents/notes")
+    .with_backend("syncthing")
+    .debounce(seconds=30)
+    .health_check(interval=60)
+    .stop_syncthing_on_exit(True)
+    .add_spoke("webserver", backend="sftp", remote_path="/home/user/notes")
+    .save()
+)
 ```
 
-### As a service
+This produces the equivalent JSON:
 
-**Windows:** Runs automatically at login (startup shortcut)
-
-**Linux:**
-```bash
-systemctl --user start dgmt    # Start
-systemctl --user stop dgmt     # Stop
-systemctl --user status dgmt   # Status
-journalctl --user -u dgmt -f   # Follow logs
+```json
+{
+  "hub": {
+    "watch_paths": ["~/Obsidian", "~/Documents/notes"],
+    "debounce_seconds": 30,
+    "health_check_interval": 60
+  },
+  "defaults": { "backend": "syncthing" },
+  "spokes": {
+    "webserver": {
+      "backend": "sftp",
+      "remote_path": "/home/user/notes",
+      "enabled": true
+    }
+  },
+  "backends": {
+    "syncthing": { "stop_on_exit": true }
+  }
+}
 ```
 
-## How it works
+## Prerequisites
 
-1. **On startup:** Pull latest from Google Drive (gets changes from other devices)
-2. **Bidirectional sync:** Push any local changes that weren't on Drive
-3. **File watcher** monitors your configured paths using `watchdog`
-4. **Debouncer** waits for a "quiet period" (no changes for 30s) before syncing
-   - Prevents hammering Drive when you're actively editing
-   - `max_wait_seconds` ensures sync happens even during long editing sessions
-5. **rclone bisync** runs, syncing local ↔ remote bidirectionally
-6. **Health monitor** (optional) pings Syncthing API every 60s
-   - If Syncthing doesn't respond, dgmt restarts it automatically
-   - Disable with `"restart_syncthing_on_failure": false`
+- **Python 3.10+**
+- **Syncthing** (optional, for P2P sync)
+- **rclone** (optional, for cloud backup)
+- **rsync** (optional, for SFTP backend)
 
 ## Logs
 
 Logs are written to `~/.dgmt/dgmt.log`:
 
 ```
-[2025-01-29 09:15:32] INFO: dgmt starting up
-[2025-01-29 09:15:32] INFO: Watching: /home/dylan/Obsidian
-[2025-01-29 09:15:32] INFO: Running initial sync...
-[2025-01-29 09:15:45] INFO: Sync completed: /home/dylan/Obsidian
-[2025-01-29 09:23:17] INFO: Quiet period reached, triggering sync
-[2025-01-29 09:23:28] INFO: Sync completed: /home/dylan/Obsidian
+[2025-01-31 09:15:32] INFO: dgmt starting up
+[2025-01-31 09:15:32] INFO: Watching: ['C:\\Users\\dylan\\Obsidian']
+[2025-01-31 09:15:32] INFO: Running initial sync...
+[2025-01-31 09:15:45] INFO: Sync completed: C:\Users\dylan\Obsidian
+[2025-01-31 09:23:17] INFO: Quiet period reached, triggering sync
 ```
+
+Set `logging.level` to `DEBUG` for verbose output.
 
 ## Troubleshooting
 
 **"rclone not found"**
-- Make sure rclone is in your PATH
-- Windows: `scoop install rclone` or add to PATH manually
+- Ensure rclone is in your PATH: `scoop install rclone` (Windows) or `apt install rclone` (Linux)
 
 **"Syncthing not responding" keeps appearing**
 - Check if Syncthing is running: `http://localhost:8384`
 - Verify API key in config if you've changed Syncthing's default settings
+- Set `restart_on_failure: false` to disable auto-restart
 
 **First sync fails with bisync error**
-- This is normal on first run - dgmt uses `--resync` automatically
-- If it persists, run manually: `rclone bisync ~/Obsidian dgmt:Backup --resync`
+- Normal on first run - dgmt uses `--resync` automatically
+- If it persists: `rclone bisync ~/Obsidian remote:Backup --resync`
 
 **Changes not syncing**
 - Check `~/.dgmt/dgmt.log` for errors
-- Verify `watch_paths` in config are correct
-- Try `log_level: "DEBUG"` for more detail
+- Verify `hub.watch_paths` in config
+- Set `logging.level: "DEBUG"` for more detail
+
+**Service won't start**
+- Windows: Check Task Scheduler for "dgmt" task
+- Linux: `journalctl --user -u dgmt` for systemd logs

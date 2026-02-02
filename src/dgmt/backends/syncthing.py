@@ -155,20 +155,33 @@ class SyncthingBackend(Backend):
         if not exe_path:
             # Try common locations
             exe_path = "syncthing"
+        else:
+            # Expand any ~ in the path (defensive, should already be expanded)
+            exe_path = str(Path(exe_path).expanduser())
+
+        # Check if executable exists (if it's an absolute path)
+        if os.path.isabs(exe_path) and not os.path.exists(exe_path):
+            self._logger.error(f"Syncthing executable not found: {exe_path}")
+            return False
 
         if sys.platform == "win32":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = 0
+            # Use pythonw.exe (no-console Python) as intermediary launcher
+            # This prevents the child process from allocating a console window
+            pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+            if not Path(pythonw).exists():
+                pythonw = sys.executable  # Fall back to regular python
 
+            launcher_script = f'''import subprocess
+subprocess.Popen(
+    {[exe_path, "serve", "--no-browser"]!r},
+    creationflags=0x08000000,
+)'''
             subprocess.Popen(
-                [exe_path, "serve", "--no-browser"],
-                creationflags=(
-                    subprocess.DETACHED_PROCESS
-                    | subprocess.CREATE_NEW_PROCESS_GROUP
-                    | subprocess.CREATE_NO_WINDOW
-                ),
-                startupinfo=startupinfo,
+                [pythonw, "-c", launcher_script],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
         else:
             # Try systemd first, fall back to direct start

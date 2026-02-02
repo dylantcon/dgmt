@@ -184,6 +184,67 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_logs(args: argparse.Namespace) -> int:
+    """Tail and follow the dgmt log file."""
+    import time
+    from dgmt.core.config import Config
+    from dgmt.utils.paths import get_log_file
+
+    try:
+        config = Config()
+        log_file = config.data.logging.file
+    except Exception:
+        log_file = get_log_file()
+
+    if not log_file.exists():
+        print_error(f"Log file not found: {log_file}")
+        return 1
+
+    print_info(f"Following {log_file} (Ctrl+C to stop)\n")
+
+    lines_to_show = args.lines
+
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+            # Show last N lines initially
+            if lines_to_show > 0:
+                # Read all lines and show last N
+                all_lines = f.readlines()
+                for line in all_lines[-lines_to_show:]:
+                    print(line, end="")
+
+            # Follow mode - seek to end and poll for new content
+            f.seek(0, 2)  # Seek to end
+            last_pos = f.tell()
+            last_size = log_file.stat().st_size
+
+            while True:
+                # Check if file was truncated/rotated
+                current_size = log_file.stat().st_size
+                if current_size < last_size:
+                    # File was truncated, start from beginning
+                    f.seek(0)
+                    print_info("--- Log file rotated ---")
+
+                # Read new content
+                line = f.readline()
+                if line:
+                    print(line, end="")
+                    last_pos = f.tell()
+                else:
+                    # No new content, wait a bit
+                    time.sleep(0.5)
+
+                last_size = current_size
+
+    except KeyboardInterrupt:
+        print("\n")
+        return 0
+    except Exception as e:
+        print_error(f"Error reading log: {e}")
+        return 1
+
+
 def register_commands(subparsers: argparse._SubParsersAction) -> None:
     """Register service management commands."""
     # install
@@ -225,3 +286,16 @@ def register_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Show service and sync status",
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # logs
+    logs_parser = subparsers.add_parser(
+        "logs",
+        help="Tail and follow the dgmt log file",
+    )
+    logs_parser.add_argument(
+        "-n", "--lines",
+        type=int,
+        default=20,
+        help="Number of lines to show initially (default: 20)",
+    )
+    logs_parser.set_defaults(func=cmd_logs)
