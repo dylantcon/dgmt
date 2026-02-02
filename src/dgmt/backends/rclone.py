@@ -103,6 +103,12 @@ class RcloneBackend(Backend):
         if "--ignore-checksum" not in cmd:
             cmd.append("--ignore-checksum")
 
+        # Conflict resolution: newer modification time wins, no backups
+        cmd.extend([
+            "--conflict-resolve", "newer",
+            "--conflict-loser", "delete",
+        ])
+
         if resync:
             cmd.append("--resync")
 
