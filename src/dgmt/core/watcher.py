@@ -78,7 +78,7 @@ class DebouncedHandler(FileSystemEventHandler):
         self._last_event: Optional[datetime] = None
         self._first_event: Optional[datetime] = None
         self._timer: Optional[threading.Timer] = None
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # RLock allows reentrant acquisition (needed for max_wait path)
         self._changes = ChangeSet()
 
     def _should_ignore(self, path: str) -> bool:
@@ -94,38 +94,41 @@ class DebouncedHandler(FileSystemEventHandler):
 
     def on_any_event(self, event: FileSystemEvent) -> None:
         """Handle any file system event."""
-        if event.is_directory:
-            return
-        if self._should_ignore(event.src_path):
-            return
+        try:
+            if event.is_directory:
+                return
+            if self._should_ignore(event.src_path):
+                return
 
-        with self._lock:
-            now = datetime.now()
-            self._last_event = now
+            with self._lock:
+                now = datetime.now()
+                self._last_event = now
 
-            if self._first_event is None:
-                self._first_event = now
+                if self._first_event is None:
+                    self._first_event = now
 
-            # Track the specific change type
-            self._track_event(event)
+                # Track the specific change type
+                self._track_event(event)
 
-            # Cancel existing timer
-            if self._timer:
-                self._timer.cancel()
+                # Cancel existing timer
+                if self._timer:
+                    self._timer.cancel()
 
-            # Check if we've exceeded max wait
-            elapsed = (now - self._first_event).total_seconds()
-            if elapsed >= self.max_wait_seconds:
-                self.logger.info("Max wait exceeded, forcing sync")
-                self._trigger_callback()
-            else:
-                # Schedule new debounced callback
-                self._timer = threading.Timer(
-                    self.debounce_seconds,
-                    self._trigger_callback
-                )
-                self._timer.daemon = True
-                self._timer.start()
+                # Check if we've exceeded max wait
+                elapsed = (now - self._first_event).total_seconds()
+                if elapsed >= self.max_wait_seconds:
+                    self.logger.info("Max wait exceeded, forcing sync")
+                    self._trigger_callback()
+                else:
+                    # Schedule new debounced callback
+                    self._timer = threading.Timer(
+                        self.debounce_seconds,
+                        self._trigger_callback
+                    )
+                    self._timer.daemon = True
+                    self._timer.start()
+        except Exception as e:
+            self.logger.error(f"Error handling file event: {e}", exc_info=True)
 
     def _track_event(self, event: FileSystemEvent) -> None:
         """Track the specific type of file system event."""
