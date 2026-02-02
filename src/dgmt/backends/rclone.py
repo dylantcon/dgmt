@@ -91,6 +91,31 @@ class RcloneBackend(Backend):
             self._logger.error(f"Failed to create remote directory: {e}")
             return False
 
+    def _run_bisync(
+        self, local_path: str, remote: str, resync: bool = False
+    ) -> subprocess.CompletedProcess:
+        """Run rclone bisync command."""
+        cmd = ["rclone", "bisync", local_path, remote]
+        cmd.extend(self._flags)
+
+        # Ignore checksum to handle files that change during transfer
+        # (e.g., Obsidian's workspace.json)
+        if "--ignore-checksum" not in cmd:
+            cmd.append("--ignore-checksum")
+
+        if resync:
+            cmd.append("--resync")
+
+        self._logger.info(f"Running: {' '.join(cmd)}")
+
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,  # 10 minute timeout
+            **self._get_subprocess_args(),
+        )
+
     def sync(self, local_path: str, remote_path: Optional[str] = None) -> bool:
         """Run rclone bisync for the given path."""
         with self._lock:
@@ -100,31 +125,32 @@ class RcloneBackend(Backend):
             if self._first_run:
                 self.ensure_remote_exists(local_path)
 
-            cmd = ["rclone", "bisync", local_path, remote]
-            cmd.extend(self._flags)
-
-            # First run needs --resync
-            if self._first_run:
-                cmd.append("--resync")
-                self._first_run = False
-
-            self._logger.info(f"Running: {' '.join(cmd)}")
-
             try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=600,  # 10 minute timeout
-                    **self._get_subprocess_args(),
-                )
+                # First run needs --resync
+                resync = self._first_run
+                if self._first_run:
+                    self._first_run = False
+
+                result = self._run_bisync(local_path, remote, resync=resync)
 
                 if result.returncode == 0:
                     self._logger.info(f"Sync completed: {local_path}")
                     return True
-                else:
-                    self._logger.error(f"Sync failed: {result.stderr}")
-                    return False
+
+                # Check if we need to recover with --resync
+                output = result.stderr + result.stdout
+                if "Must run --resync" in output or "cannot find prior" in output:
+                    self._logger.warning(
+                        "Bisync state corrupted, recovering with --resync"
+                    )
+                    result = self._run_bisync(local_path, remote, resync=True)
+
+                    if result.returncode == 0:
+                        self._logger.info(f"Sync recovered and completed: {local_path}")
+                        return True
+
+                self._logger.error(f"Sync failed: {result.stderr}")
+                return False
 
             except subprocess.TimeoutExpired:
                 self._logger.error("Sync timed out")
