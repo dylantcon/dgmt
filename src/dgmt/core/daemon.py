@@ -151,6 +151,14 @@ class Daemon:
             self._logger.debug("rclone not enabled, skipping sync")
             return
 
+        # Wait for Syncthing to finish syncing before running rclone
+        syncthing = self._backends.get("syncthing")
+        if syncthing:
+            if not syncthing.is_idle():
+                self._logger.info("Waiting for Syncthing to idle before rclone sync...")
+                if not syncthing.wait_for_idle(timeout=120):
+                    self._logger.warning("Syncthing still busy, proceeding with rclone anyway")
+
         for path in self._config.hub.watch_paths:
             try:
                 rclone.sync(str(path))
@@ -163,6 +171,14 @@ class Daemon:
         if not rclone:
             self._logger.debug("rclone not enabled, skipping pull")
             return
+
+        # Wait for Syncthing to finish syncing before pulling
+        syncthing = self._backends.get("syncthing")
+        if syncthing:
+            if not syncthing.is_idle():
+                self._logger.info("Waiting for Syncthing to idle before rclone pull...")
+                if not syncthing.wait_for_idle(timeout=120):
+                    self._logger.warning("Syncthing still busy, proceeding with rclone pull anyway")
 
         timeout = self._config.hub.startup_pull_timeout
         for path in self._config.hub.watch_paths:

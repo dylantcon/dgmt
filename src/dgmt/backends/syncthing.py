@@ -144,6 +144,84 @@ class SyncthingBackend(Backend):
         except requests.RequestException:
             return None
 
+    def get_folder_statuses(self) -> dict[str, str]:
+        """Get the sync state of all folders.
+
+        Returns:
+            Dict mapping folder ID to state (idle, scanning, syncing, etc.)
+        """
+        statuses = {}
+        try:
+            # Get list of folders
+            resp = requests.get(
+                f"{self._api_url}/rest/config/folders",
+                headers=self._get_headers(),
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                return statuses
+
+            folders = resp.json()
+            for folder in folders:
+                folder_id = folder.get("id")
+                if not folder_id:
+                    continue
+
+                # Get status for each folder
+                status_resp = requests.get(
+                    f"{self._api_url}/rest/db/status",
+                    headers=self._get_headers(),
+                    params={"folder": folder_id},
+                    timeout=5,
+                )
+                if status_resp.status_code == 200:
+                    state = status_resp.json().get("state", "unknown")
+                    statuses[folder_id] = state
+
+            return statuses
+        except requests.RequestException as e:
+            self._logger.warning(f"Failed to get folder statuses: {e}")
+            return statuses
+
+    def is_idle(self) -> bool:
+        """Check if all Syncthing folders are idle (not syncing).
+
+        Returns:
+            True if all folders are idle or if Syncthing is not running.
+        """
+        if not self.is_healthy():
+            return True  # Can't check, assume idle
+
+        statuses = self.get_folder_statuses()
+        if not statuses:
+            return True  # No folders or couldn't get status
+
+        for folder_id, state in statuses.items():
+            if state not in ("idle", "error"):
+                self._logger.debug(f"Folder {folder_id} is {state}")
+                return False
+        return True
+
+    def wait_for_idle(self, timeout: float = 60, poll_interval: float = 2) -> bool:
+        """Wait for all Syncthing folders to become idle.
+
+        Args:
+            timeout: Maximum seconds to wait.
+            poll_interval: Seconds between status checks.
+
+        Returns:
+            True if idle within timeout, False if timed out.
+        """
+        start = time.time()
+        while time.time() - start < timeout:
+            if self.is_idle():
+                return True
+            self._logger.debug(f"Waiting for Syncthing to idle...")
+            time.sleep(poll_interval)
+
+        self._logger.warning(f"Syncthing did not idle within {timeout}s")
+        return False
+
     def start(self) -> bool:
         """Start Syncthing if not running."""
         if self.is_healthy():
