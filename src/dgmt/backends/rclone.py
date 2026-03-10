@@ -279,7 +279,10 @@ class RcloneBackend(Backend):
                     return True
                 else:
                     # File might not exist on remote yet, that's OK
-                    if "not found" in result.stderr.lower() or "no such" in result.stderr.lower():
+                    stderr_lower = result.stderr.lower()
+                    if ("not found" in stderr_lower
+                            or "no such" in stderr_lower
+                            or "doesn't exist" in stderr_lower):
                         self._logger.debug(f"Remote file not found, skip rename: {old_remote}")
                         return True
                     self._logger.error(f"Remote rename failed: {result.stderr}")

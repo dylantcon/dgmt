@@ -61,6 +61,16 @@ class LoggingConfig:
 
 
 @dataclass
+class CalendarConfig:
+    """Google Calendar configuration."""
+
+    enabled: bool = False
+    default_calendar_id: str = "primary"
+    default_view: str = "weekly"
+    color_rules: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class ConfigData:
     """Complete configuration data structure."""
 
@@ -69,6 +79,7 @@ class ConfigData:
     spokes: dict[str, SpokeConfig] = field(default_factory=dict)
     backends: BackendSettings = field(default_factory=BackendSettings)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    calendar: CalendarConfig = field(default_factory=CalendarConfig)
 
 
 class Config(FluentBuilder["Config"]):
@@ -187,6 +198,16 @@ class Config(FluentBuilder["Config"]):
             self._data.logging.file = expand_path(data.get("log_file", "~/.dgmt/dgmt.log"))
             self._data.logging.level = data.get("log_level", "INFO")
 
+        # Calendar
+        if "calendar" in data:
+            cal = data["calendar"]
+            self._data.calendar.enabled = cal.get("enabled", False)
+            self._data.calendar.default_calendar_id = cal.get(
+                "default_calendar_id", "primary"
+            )
+            self._data.calendar.default_view = cal.get("default_view", "weekly")
+            self._data.calendar.color_rules = cal.get("color_rules", [])
+
     def _to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary for JSON serialization."""
         return {
@@ -226,6 +247,12 @@ class Config(FluentBuilder["Config"]):
             "logging": {
                 "file": str(self._data.logging.file),
                 "level": self._data.logging.level,
+            },
+            "calendar": {
+                "enabled": self._data.calendar.enabled,
+                "default_calendar_id": self._data.calendar.default_calendar_id,
+                "default_view": self._data.calendar.default_view,
+                "color_rules": self._data.calendar.color_rules,
             },
         }
 

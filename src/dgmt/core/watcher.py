@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -50,6 +51,9 @@ class DebouncedHandler(FileSystemEventHandler):
 
     # Default patterns to ignore
     DEFAULT_IGNORE = {".git", ".obsidian", "__pycache__", ".sync", ".stfolder", ".stversions"}
+
+    # Syncthing temporary file pattern (e.g., file.md.7c8d0c98.partial)
+    SYNCTHING_TEMP_RE = re.compile(r'\.[0-9a-f]{6,16}\.(partial|tmp)$', re.IGNORECASE)
 
     def __init__(
         self,
@@ -130,12 +134,23 @@ class DebouncedHandler(FileSystemEventHandler):
         except Exception as e:
             self.logger.error(f"Error handling file event: {e}", exc_info=True)
 
+    def _is_syncthing_temp(self, path: str) -> bool:
+        """Check if a path is a Syncthing temporary download file."""
+        return bool(self.SYNCTHING_TEMP_RE.search(Path(path).name))
+
     def _track_event(self, event: FileSystemEvent) -> None:
         """Track the specific type of file system event."""
         src = event.src_path
 
         if isinstance(event, FileMovedEvent):
             dest = event.dest_path
+            # Filter Syncthing temp files: .partial/.tmp renames are not real renames.
+            # The temp file never existed on the remote, so skip the rename and
+            # treat the destination as a new file for bisync to pick up.
+            if self._is_syncthing_temp(src):
+                self.logger.debug(f"Syncthing temp rename, treating as create: {dest}")
+                self._changes.created.add(dest)
+                return
             self.logger.debug(f"Rename detected: {src} -> {dest}")
             # Track as rename
             self._changes.renamed[src] = dest
@@ -147,6 +162,11 @@ class DebouncedHandler(FileSystemEventHandler):
             self._changes.deleted.discard(dest)
 
         elif isinstance(event, FileCreatedEvent):
+            # Ignore Syncthing temp files entirely — they are incomplete downloads
+            # that should never be pushed to remote
+            if self._is_syncthing_temp(src):
+                self.logger.debug(f"Ignoring Syncthing temp create: {src}")
+                return
             self.logger.debug(f"Create detected: {src}")
             self._changes.created.add(src)
             # If it was deleted earlier in this batch, it's now modified
@@ -155,6 +175,10 @@ class DebouncedHandler(FileSystemEventHandler):
                 self._changes.modified.add(src)
 
         elif isinstance(event, FileDeletedEvent):
+            # Ignore Syncthing temp file deletions — they were never tracked
+            if self._is_syncthing_temp(src):
+                self.logger.debug(f"Ignoring Syncthing temp delete: {src}")
+                return
             self.logger.debug(f"Delete detected: {src}")
             # If it was created in this batch, just remove the create
             if src in self._changes.created:
@@ -164,6 +188,9 @@ class DebouncedHandler(FileSystemEventHandler):
             self._changes.modified.discard(src)
 
         elif isinstance(event, FileModifiedEvent):
+            # Ignore Syncthing temp file modifications — incomplete download chunks
+            if self._is_syncthing_temp(src):
+                return
             self.logger.debug(f"Modify detected: {src}")
             # Only track if not already tracked as created
             if src not in self._changes.created:

@@ -20,5 +20,14 @@
     "log_level": "INFO",
 
     "restart_syncthing_on_failure": true,
-    "syncthing_exe": "~/scoop/apps/syncthing/current/syncthing.exe"
+    "syncthing_exe": "~/scoop/apps/syncthing/current/syncthing.exe",
+
+    "calendar": {
+        "enabled": false,
+        "default_calendar_id": "primary",
+        "default_view": "weekly",
+        "color_rules": [
+            {"pattern": "Meeting", "color_id": "7", "case_sensitive": false}
+        ]
+    }
 }

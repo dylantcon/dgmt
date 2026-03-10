@@ -22,6 +22,8 @@ Examples:
   dgmt sync             Trigger manual sync
   dgmt remote add pc    Add a remote machine
   dgmt config           Show configuration
+  dgmt cal              Launch calendar TUI
+  dgmt cal list         List upcoming events
 
 Config: ~/.dgmt/config.json
 Logs:   ~/.dgmt/dgmt.log
@@ -49,11 +51,13 @@ Logs:   ~/.dgmt/dgmt.log
 
     # Register all command modules
     from dgmt.cli.commands import install, sync, remote, config
+    from dgmt.calendar.cli.commands import register_commands as register_cal_commands
 
     install.register_commands(subparsers)
     sync.register_commands(subparsers)
     remote.register_commands(subparsers)
     config.register_commands(subparsers)
+    register_cal_commands(subparsers)
 
     return parser
 
