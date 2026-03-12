@@ -460,7 +460,7 @@ def cmd_calendars(args: argparse.Namespace) -> int:
         table.add_row(
             cal["id"],
             cal["summary"],
-            "✓" if cal["primary"] else "",
+            "*" if cal["primary"] else "",
         )
 
     console.print(table)

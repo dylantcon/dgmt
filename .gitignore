@@ -1,2 +1,11 @@
 __pycache__/
+*.pyc
 nul
+dist/
+build/
+*.egg-info/
+
+# Credentials and tokens (should live in ~/.dgmt/, but just in case)
+**/google_credentials.json
+**/tokens/
+*.token.json

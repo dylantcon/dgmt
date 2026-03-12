@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.css.query import NoMatches
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -14,6 +15,9 @@ from textual.widgets import Static
 
 from dgmt.calendar.models import CalendarEvent
 from dgmt.calendar.colors import GOOGLE_COLORS
+
+# Background tint for the selected day
+SELECTED_BG = "#2d2030"
 
 
 class MonthlyView(Widget):
@@ -43,18 +47,35 @@ class MonthlyView(Widget):
     }
     """
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._composed = False
+
     def compose(self) -> ComposeResult:
         yield Static("", id="month-header", classes="month-header")
         yield VerticalScroll(id="month-grid")
 
-    def watch_current_date(self, date: datetime) -> None:
+    def on_mount(self) -> None:
+        self._composed = True
+        if hasattr(self, "_pending_date"):
+            self.current_date = self._pending_date
+        if hasattr(self, "_pending_events"):
+            self.events = self._pending_events
         self._refresh()
+
+    def watch_current_date(self, date: datetime) -> None:
+        if self._composed:
+            self._refresh()
 
     def watch_events(self, events: list[CalendarEvent]) -> None:
-        self._refresh()
+        if self._composed:
+            self._refresh()
 
     def _refresh(self) -> None:
-        header = self.query_one("#month-header", Static)
+        try:
+            header = self.query_one("#month-header", Static)
+        except NoMatches:
+            return
         header.update(f"[bold]{self.current_date.strftime('%B %Y')}[/bold]")
 
         grid = self.query_one("#month-grid", VerticalScroll)
@@ -64,6 +85,7 @@ class MonthlyView(Widget):
         cal = calendar.Calendar(firstweekday=6)  # Sunday start
         month_days = list(cal.itermonthdays2(year, month))
         today = datetime.now().date()
+        selected = self.current_date.date()
 
         # Group events by day
         events_by_day: dict[int, list[CalendarEvent]] = {}
@@ -99,10 +121,21 @@ class MonthlyView(Widget):
                         and month == today.month
                         and day_num == today.day
                     )
-                    if is_today:
-                        cell = f"[bold $accent] {day_num:<{col_width - 1}}[/bold $accent]"
+                    is_sel = (
+                        year == selected.year
+                        and month == selected.month
+                        and day_num == selected.day
+                    )
+                    cell_text = f" {day_num:<{col_width - 1}}"
+
+                    if is_today and is_sel:
+                        cell = f"[bold $accent on {SELECTED_BG}]{cell_text}[/bold $accent on {SELECTED_BG}]"
+                    elif is_today:
+                        cell = f"[bold $accent]{cell_text}[/bold $accent]"
+                    elif is_sel:
+                        cell = f"[bold on {SELECTED_BG}]{cell_text}[/bold on {SELECTED_BG}]"
                     else:
-                        cell = f" {day_num:<{col_width - 1}}"
+                        cell = cell_text
                     num_parts.append(cell)
             lines.append("│" + "│".join(num_parts) + "│")
 
@@ -113,17 +146,34 @@ class MonthlyView(Widget):
                     if day_num == 0:
                         event_parts.append(" " * col_width)
                     else:
+                        is_sel = (
+                            year == selected.year
+                            and month == selected.month
+                            and day_num == selected.day
+                        )
                         day_evts = events_by_day.get(day_num, [])
                         if row < len(day_evts):
                             ev = day_evts[row]
                             summary = ev.summary[:col_width - 2]
                             style = self._event_style(ev)
+                            if is_sel:
+                                style += f" on {SELECTED_BG}"
                             event_parts.append(f" [{style}]{summary:<{col_width - 1}}[/{style}]")
                         elif row == 2 and len(day_evts) > 2:
                             extra = f" +{len(day_evts) - 2} more"
-                            event_parts.append(f"[dim]{extra:<{col_width}}[/dim]")
+                            if is_sel:
+                                event_parts.append(
+                                    f"[dim on {SELECTED_BG}]{extra:<{col_width}}[/dim on {SELECTED_BG}]"
+                                )
+                            else:
+                                event_parts.append(f"[dim]{extra:<{col_width}}[/dim]")
                         else:
-                            event_parts.append(" " * col_width)
+                            if is_sel:
+                                event_parts.append(
+                                    f"[on {SELECTED_BG}]{' ' * col_width}[/on {SELECTED_BG}]"
+                                )
+                            else:
+                                event_parts.append(" " * col_width)
                 lines.append("│" + "│".join(event_parts) + "│")
 
             # Row separator
@@ -134,7 +184,7 @@ class MonthlyView(Widget):
         lines.append("└" + "┴".join("─" * col_width for _ in range(7)) + "┘")
 
         content = "\n".join(lines)
-        grid.mount(Static(content, id="month-content"))
+        grid.mount(Static(content))
 
     @staticmethod
     def _event_style(event: CalendarEvent) -> str:

@@ -6,12 +6,17 @@ from datetime import datetime, timedelta
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
 from dgmt.calendar.models import CalendarEvent
 from dgmt.calendar.colors import GOOGLE_COLORS
+
+# Background tint for the selected day — a subtle warm magenta wash
+# that lets foreground colors (event colors, today accent) show through
+SELECTED_BG = "#2d2030"
 
 
 class WeeklyView(Widget):
@@ -45,26 +50,38 @@ class WeeklyView(Widget):
         padding: 0 1;
     }
 
-    .day-column-header {
-        text-align: center;
-        text-style: bold;
-        padding: 0 0 1 0;
-    }
-
     .day-column-today {
         border: round $accent;
     }
+
+    .day-column-selected {
+        background: #2d2030;
+    }
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._composed = False
 
     def compose(self) -> ComposeResult:
         yield Static("", id="week-header", classes="week-header")
         yield Horizontal(id="week-grid", classes="week-grid")
 
-    def watch_current_date(self, date: datetime) -> None:
+    def on_mount(self) -> None:
+        self._composed = True
+        if hasattr(self, "_pending_date"):
+            self.current_date = self._pending_date
+        if hasattr(self, "_pending_events"):
+            self.events = self._pending_events
         self._refresh()
 
+    def watch_current_date(self, date: datetime) -> None:
+        if self._composed:
+            self._refresh()
+
     def watch_events(self, events: list[CalendarEvent]) -> None:
-        self._refresh()
+        if self._composed:
+            self._refresh()
 
     def _get_week_start(self) -> datetime:
         """Get Sunday of the current week."""
@@ -73,7 +90,10 @@ class WeeklyView(Widget):
         return sunday.replace(hour=0, minute=0, second=0, microsecond=0)
 
     def _refresh(self) -> None:
-        header = self.query_one("#week-header", Static)
+        try:
+            header = self.query_one("#week-header", Static)
+        except NoMatches:
+            return
         week_start = self._get_week_start()
         week_end = week_start + timedelta(days=6)
         header.update(
@@ -85,6 +105,7 @@ class WeeklyView(Widget):
         grid.remove_children()
 
         today = datetime.now().date()
+        selected = self.current_date.date()
         day_names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
 
         # Group events by day
@@ -98,15 +119,31 @@ class WeeklyView(Widget):
         for i in range(7):
             day_date = week_start + timedelta(days=i)
             is_today = day_date.date() == today
+            is_selected = day_date.date() == selected
 
-            col = Vertical(
-                classes=f"day-column {'day-column-today' if is_today else ''}"
-            )
+            # Build CSS classes for the column
+            classes = "day-column"
+            if is_today:
+                classes += " day-column-today"
+            if is_selected:
+                classes += " day-column-selected"
+
+            col = Vertical(classes=classes)
 
             lines: list[str] = []
             day_label = f"{day_names[i]} {day_date.day}"
-            if is_today:
+
+            # Box char styling: today=accent fg, selected=tinted bg, both=both
+            if is_today and is_selected:
+                lines.append(
+                    f"[bold $accent on {SELECTED_BG}]┌─ {day_label} ─┐[/bold $accent on {SELECTED_BG}]"
+                )
+            elif is_today:
                 lines.append(f"[bold $accent]┌─ {day_label} ─┐[/bold $accent]")
+            elif is_selected:
+                lines.append(
+                    f"[bold on {SELECTED_BG}]┌─ {day_label} ─┐[/bold on {SELECTED_BG}]"
+                )
             else:
                 lines.append(f"[bold]┌─ {day_label} ─┐[/bold]")
 
@@ -114,16 +151,29 @@ class WeeklyView(Widget):
             if day_events:
                 for ev in day_events:
                     style = self._event_style(ev)
+                    if is_selected:
+                        style += f" on {SELECTED_BG}"
                     if ev.all_day:
-                        label = f"[{style}]▪ {ev.summary}[/{style}]"
+                        label = f"[{style}]- {ev.summary}[/{style}]"
                     else:
                         time_str = ev.start.strftime("%I:%M%p").lstrip("0").lower() if ev.start else ""
-                        label = f"[{style}]▪ {time_str} {ev.summary}[/{style}]"
+                        label = f"[{style}]- {time_str} {ev.summary}[/{style}]"
                     lines.append(label)
             else:
-                lines.append("[dim]  No events[/dim]")
+                if is_selected:
+                    lines.append(f"[dim on {SELECTED_BG}]  No events[/dim on {SELECTED_BG}]")
+                else:
+                    lines.append("[dim]  No events[/dim]")
 
-            lines.append(f"└{'─' * (len(day_label) + 4)}┘")
+            bottom_border = f"└{'─' * (len(day_label) + 4)}┘"
+            if is_today and is_selected:
+                lines.append(f"[$accent on {SELECTED_BG}]{bottom_border}[/$accent on {SELECTED_BG}]")
+            elif is_today:
+                lines.append(f"[$accent]{bottom_border}[/$accent]")
+            elif is_selected:
+                lines.append(f"[on {SELECTED_BG}]{bottom_border}[/on {SELECTED_BG}]")
+            else:
+                lines.append(bottom_border)
 
             content = "\n".join(lines)
             grid.mount(col)

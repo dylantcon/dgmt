@@ -83,6 +83,20 @@ dgmt config edit      # Open in $EDITOR
 dgmt config set <key> <value>
 dgmt config add-watch <path>
 dgmt config backend <name>
+
+# Calendar
+dgmt cal              # Launch interactive TUI
+dgmt cal auth         # Run Google OAuth flow
+dgmt cal auth revoke  # Revoke stored token
+dgmt cal list [--date DATE] [--days N]
+dgmt cal add "Summary" --start "2026-03-11 10:00" [--end "..."] [--color Peacock]
+dgmt cal edit EVENT_ID [--summary ...] [--start ...] [--color ...]
+dgmt cal delete EVENT_ID
+dgmt cal view [--daily|--weekly|--monthly] [--date DATE]
+dgmt cal calendars
+dgmt cal colors                         # List rules and available colors
+dgmt cal colors add "pattern" --color Peacock
+dgmt cal colors remove "pattern"
 ```
 
 ## Configuration
@@ -123,6 +137,14 @@ dgmt config backend <name>
   "logging": {
     "file": "~/.dgmt/dgmt.log",
     "level": "INFO"
+  },
+  "calendar": {
+    "enabled": false,
+    "default_calendar_id": "primary",
+    "default_view": "weekly",
+    "color_rules": [
+      {"pattern": "Meeting", "color_id": "7", "case_sensitive": false}
+    ]
   }
 }
 ```
@@ -138,8 +160,48 @@ dgmt config backend <name>
 | `backends.rclone.enabled` | Enable cloud backup via rclone |
 | `backends.syncthing.stop_on_exit` | Kill Syncthing when dgmt stops |
 | `logging.level` | DEBUG, INFO, WARNING, ERROR |
+| `calendar.default_calendar_id` | Google Calendar ID to use |
+| `calendar.default_view` | TUI default: `daily`, `weekly`, or `monthly` |
+| `calendar.color_rules` | Auto-color events by summary pattern |
 
 **Hot reload**: The daemon watches `config.json` and applies changes automatically. No restart required.
+
+## Calendar TUI
+
+`dgmt cal` launches an interactive terminal UI for Google Calendar.
+
+### Setup
+
+1. Create OAuth credentials at [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (Desktop app type)
+2. Save the JSON to `~/.dgmt/google_credentials.json`
+3. Run `dgmt cal auth` to authorize
+
+Token is stored at `~/.dgmt/tokens/google_calendar_token.json`. Each machine needs its own token; the credentials file is shared.
+
+### Controls
+
+| Key | Action |
+|-----|--------|
+| `d` / `w` / `m` | Switch to daily / weekly / monthly view |
+| `h` / `l` | Previous / next day |
+| `H` / `L` | Previous / next unit (week in weekly, month in monthly) |
+| `t` | Jump to today |
+| `n` | New event |
+| `e` | Edit event |
+| `x` | Delete event |
+| `q` | Quit |
+
+### Color Rules
+
+Color rules auto-assign a Google Calendar color when an event summary matches a substring pattern. If multiple rules match, you're prompted to pick one.
+
+Available colors: Lavender (1), Sage (2), Grape (3), Flamingo (4), Banana (5), Tangerine (6), Peacock (7), Graphite (8), Blueberry (9), Basil (10), Tomato (11).
+
+```bash
+dgmt cal colors add "Meeting" --color Peacock
+dgmt cal colors add "Gym" --color Basil
+dgmt cal colors remove "Meeting"
+```
 
 ## Fluent Configuration API
 
@@ -189,6 +251,7 @@ This produces the equivalent JSON:
 - **Syncthing** (optional, for P2P sync)
 - **rclone** (optional, for cloud backup)
 - **rsync** (optional, for SFTP backend)
+- **Google OAuth credentials** (optional, for calendar)
 
 ## Logs
 
