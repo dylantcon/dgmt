@@ -401,6 +401,7 @@ class EventFormScreen(Screen):
             color_id=self.selected_color_id,
             calendar_id=self.event.calendar_id if self.event else "primary",
             recurrence=recurrence,
+            recurring_event_id=self.event.recurring_event_id if self.event else None,
         )
 
         self.dismiss(result)

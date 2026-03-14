@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -18,14 +19,16 @@ class CalendarAPI:
     def __init__(self, token_manager: Optional[TokenManager] = None) -> None:
         self._token_manager = token_manager or TokenManager()
         self._service = None
+        self._lock = threading.Lock()
         self._logger = get_logger("dgmt.calendar.api")
 
     def _get_service(self):
         """Get or create the Calendar API service."""
-        if self._service is None:
-            creds = self._token_manager.get_or_authorize()
-            self._service = build("calendar", "v3", credentials=creds)
-        return self._service
+        with self._lock:
+            if self._service is None:
+                creds = self._token_manager.get_or_authorize()
+                self._service = build("calendar", "v3", credentials=creds)
+            return self._service
 
     def list_events(
         self,
@@ -73,19 +76,28 @@ class CalendarAPI:
         result = service.events().insert(calendarId=calendar_id, body=body).execute()
         return CalendarEvent.from_google_body(result)
 
-    def update_event(self, event: CalendarEvent) -> CalendarEvent:
-        """Update an existing event."""
+    def update_event(
+        self, event: CalendarEvent, event_id: Optional[str] = None
+    ) -> CalendarEvent:
+        """Update an existing event.
+
+        Args:
+            event: The event data to write.
+            event_id: Override the target event ID (e.g. recurringEventId
+                      to update all instances of a recurring series).
+        """
         service = self._get_service()
         calendar_id = event.calendar_id or "primary"
         body = event.to_google_body()
+        target_id = event_id or event.id
 
-        if not event.id:
+        if not target_id:
             raise ValueError("Event ID is required for update")
 
-        self._logger.info(f"Updating event: {event.id}")
+        self._logger.info(f"Updating event: {target_id}")
         result = (
             service.events()
-            .update(calendarId=calendar_id, eventId=event.id, body=body)
+            .update(calendarId=calendar_id, eventId=target_id, body=body)
             .execute()
         )
         return CalendarEvent.from_google_body(result)

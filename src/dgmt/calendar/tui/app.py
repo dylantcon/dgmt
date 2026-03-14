@@ -8,6 +8,7 @@ from typing import Optional
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.widget import Widget
 from textual.widgets import Footer, Header, Static
 from textual.worker import Worker, WorkerState
 
@@ -18,6 +19,7 @@ from dgmt.calendar.tui.daily import DailyView
 from dgmt.calendar.tui.weekly import WeeklyView
 from dgmt.calendar.tui.monthly import MonthlyView
 from dgmt.calendar.tui.event_form import EventFormScreen
+from dgmt.calendar.tui.scope_modal import ScopeModalScreen
 from dgmt.core.config import load_config
 
 
@@ -53,6 +55,9 @@ class CalendarApp(App):
         # Vim-style unit navigation (week/month depending on view)
         Binding("H", "nav_unit(-1)", "-1 unit", priority=True, key_display="Shift+H"),
         Binding("L", "nav_unit(1)", "+1 unit", priority=True, key_display="Shift+L"),
+        # Event selection (vim-style vertical)
+        Binding("j", "select_event(1)", "+1 event", priority=True),
+        Binding("k", "select_event(-1)", "-1 event", priority=True),
         # CRUD
         Binding("n", "new_event", "New", priority=True),
         Binding("e", "edit_event", "Edit", priority=True),
@@ -68,6 +73,7 @@ class CalendarApp(App):
         self._current_view = "weekly"
         self._current_date = datetime.now()
         self._events: list[CalendarEvent] = []
+        self._selected_event_index: int = 0
         self._color_engine = self._load_color_engine()
         # Cache: (start, end) -> events list
         self._cache: dict[tuple[str, str], list[CalendarEvent]] = {}
@@ -75,6 +81,7 @@ class CalendarApp(App):
         self._loaded_start: Optional[datetime] = None
         self._loaded_end: Optional[datetime] = None
         self._fetching = False
+        self._view_widget: Optional[Widget] = None
 
     def _load_color_engine(self) -> ColorRuleEngine:
         """Load color rules from config."""
@@ -113,6 +120,7 @@ class CalendarApp(App):
             nav_hint += "week"
         else:
             nav_hint += "month"
+        nav_hint += "  j/k=event"
         loading_str = "  [dim italic]loading...[/dim italic]" if loading else ""
         status.update(
             f" [bold]{view_label} View[/bold] | {date_str}  "
@@ -168,6 +176,14 @@ class CalendarApp(App):
         self._update_status(loading=True)
         self._fetching = True
 
+        # Push loading state to the view immediately
+        view = self._view_widget
+        if view is not None and hasattr(view, "loading"):
+            view.loading = True
+
+        # Cancel any in-flight fetch workers before spawning a new one
+        self.workers.cancel_group(self, "fetch_events")
+
         def do_fetch(start_dt: datetime, end_dt: datetime) -> list[CalendarEvent]:
             return self._api.list_events(start=start_dt, end=end_dt)
 
@@ -175,23 +191,61 @@ class CalendarApp(App):
             lambda: do_fetch(start, end),
             thread=True,
             name="fetch_events",
+            group="fetch_events",
         )
         # Store range info for the callback
         worker._dgmt_start = start  # type: ignore[attr-defined]
         worker._dgmt_end = end  # type: ignore[attr-defined]
         worker._dgmt_cache_key = cache_key  # type: ignore[attr-defined]
 
+    def _day_events(self) -> list[CalendarEvent]:
+        """Events occurring on the currently selected date."""
+        current_day = self._current_date.date()
+        result = []
+        for event in self._events:
+            if event.all_day:
+                if event.start:
+                    start_date = event.start.date()
+                    end_date = (
+                        event.end.date() if event.end else start_date + timedelta(days=1)
+                    )
+                    if start_date <= current_day < end_date:
+                        result.append(event)
+            elif event.start and event.start.date() == current_day:
+                result.append(event)
+        return result
+
+    @property
+    def _selected_event(self) -> Optional[CalendarEvent]:
+        """The currently selected event, or None."""
+        day_evts = self._day_events()
+        if day_evts and 0 <= self._selected_event_index < len(day_evts):
+            return day_evts[self._selected_event_index]
+        return None
+
     def _push_events_to_view(self) -> None:
-        """Update the current view widget with events."""
-        container = self.query_one("#view-container", Vertical)
-        children = list(container.children)
-        if children:
-            view = children[0]
+        """Update the current view widget with events and selection."""
+        view = self._view_widget
+        if view is not None:
+            if hasattr(view, "loading"):
+                view.loading = False
             if hasattr(view, "current_date"):
                 view.current_date = self._current_date
             if hasattr(view, "events"):
                 view.events = self._events
+        # Clamp selection index to the new day's event count
+        day_evts = self._day_events()
+        if self._selected_event_index >= len(day_evts):
+            self._selected_event_index = max(0, len(day_evts) - 1)
+        self._push_selection_to_view()
         self._update_status()
+
+    def _push_selection_to_view(self) -> None:
+        """Push the selected event ID to the current view widget."""
+        view = self._view_widget
+        if view is not None and hasattr(view, "selected_event_id"):
+            event = self._selected_event
+            view.selected_event_id = event.id if event else None
 
     def _switch_to_view(self, view_name: str) -> None:
         """Switch to a different view widget."""
@@ -210,6 +264,10 @@ class CalendarApp(App):
         # will pick it up once the DOM is ready (via _composed flag)
         view._pending_date = self._current_date
         view._pending_events = self._events
+        event = self._selected_event
+        view._pending_selected_event_id = event.id if event else None
+        view._pending_loading = self._fetching
+        self._view_widget = view
         container.mount(view)
         self._update_status()
 
@@ -228,6 +286,7 @@ class CalendarApp(App):
     def action_nav_day(self, direction: int) -> None:
         """Navigate by day (h/l). Always moves by one day regardless of view."""
         self._current_date += timedelta(days=direction)
+        self._selected_event_index = 0
         self._fetch_events()
 
     def action_nav_unit(self, direction: int) -> None:
@@ -247,12 +306,25 @@ class CalendarApp(App):
                 year -= 1
             self._current_date = self._current_date.replace(year=year, month=month, day=1)
 
+        self._selected_event_index = 0
         self._fetch_events()
 
     def action_go_today(self) -> None:
         """Jump to today."""
         self._current_date = datetime.now()
+        self._selected_event_index = 0
         self._fetch_events()
+
+    def action_select_event(self, direction: int) -> None:
+        """Move the event selection cursor within the current day (j/k)."""
+        day_evts = self._day_events()
+        if not day_evts:
+            return
+        self._selected_event_index = max(0, min(
+            len(day_evts) - 1,
+            self._selected_event_index + direction,
+        ))
+        self._push_selection_to_view()
 
     def action_new_event(self) -> None:
         """Open new event form."""
@@ -282,19 +354,35 @@ class CalendarApp(App):
         self.push_screen(screen, on_result)
 
     def action_edit_event(self) -> None:
-        """Edit the first event (simplified - a full impl would track selection)."""
-        if not self._events:
-            self.notify("No events to edit", severity="warning")
+        """Edit the currently selected event."""
+        event = self._selected_event
+        if not event:
+            self.notify("No event selected", severity="warning")
             return
 
-        event = self._events[0]
+        if event.is_recurring_instance:
+            def on_scope(scope: Optional[str]) -> None:
+                if scope is not None:
+                    self._open_edit_form(event, scope)
+
+            self.push_screen(ScopeModalScreen(action_label="edit"), on_scope)
+        else:
+            self._open_edit_form(event, "this")
+
+    def _open_edit_form(self, event: CalendarEvent, scope: str) -> None:
+        """Open the edit form and handle save with the given scope."""
 
         def on_result(result: Optional[CalendarEvent]) -> None:
             if result:
                 self._update_status(loading=True)
 
+                if scope == "all" and event.recurring_event_id:
+                    target_id = event.recurring_event_id
+                else:
+                    target_id = None  # use instance ID (default)
+
                 def do_update():
-                    return self._api.update_event(result)
+                    return self._api.update_event(result, event_id=target_id)
 
                 self.run_worker(do_update, thread=True, name="update_event")
 
@@ -305,19 +393,34 @@ class CalendarApp(App):
         self.push_screen(screen, on_result)
 
     def action_delete_event(self) -> None:
-        """Delete the first event (simplified)."""
-        if not self._events:
-            self.notify("No events to delete", severity="warning")
+        """Delete the currently selected event."""
+        event = self._selected_event
+        if not event:
+            self.notify("No event selected", severity="warning")
             return
 
-        event = self._events[0]
-        if event.id:
+        if event.is_recurring_instance:
+            def on_scope(scope: Optional[str]) -> None:
+                if scope is not None:
+                    self._do_delete(event, scope)
+
+            self.push_screen(ScopeModalScreen(action_label="delete"), on_scope)
+        else:
+            self._do_delete(event, "this")
+
+    def _do_delete(self, event: CalendarEvent, scope: str) -> None:
+        """Execute a delete with the given scope."""
+        if scope == "all" and event.recurring_event_id:
+            target_id = event.recurring_event_id
+        else:
+            target_id = event.id
+
+        if target_id:
             self._update_status(loading=True)
-            event_id = event.id
             event_summary = event.summary
 
             def do_delete():
-                self._api.delete_event(event_id)
+                self._api.delete_event(target_id)
                 return event_summary
 
             self.run_worker(do_delete, thread=True, name="delete_event")
@@ -345,6 +448,9 @@ class CalendarApp(App):
 
                 self._fetching = False
                 self._push_events_to_view()
+
+            elif event.state == WorkerState.CANCELLED:
+                pass  # Replacement worker is still running; don't reset _fetching
 
             elif event.state == WorkerState.ERROR:
                 self._fetching = False

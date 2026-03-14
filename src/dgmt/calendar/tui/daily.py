@@ -17,12 +17,18 @@ from dgmt.calendar.colors import GOOGLE_COLORS, ColorRuleEngine
 # Background tint for the selected day header
 SELECTED_BG = "#2d2030"
 
+# Background tint for the selected *event* — a cooler blue-ish tone
+# that is visually distinct from the warm day-selection magenta
+SELECTION_BG = "#3a3a5c"
+
 
 class DailyView(Widget):
     """Vertical hour-by-hour timeline for a single day."""
 
     current_date: reactive[datetime] = reactive(datetime.now)
     events: reactive[list[CalendarEvent]] = reactive(list, always_update=True)
+    selected_event_id: reactive[str | None] = reactive(None)
+    loading: reactive[bool] = reactive(False)
 
     DEFAULT_CSS = """
     DailyView {
@@ -61,12 +67,17 @@ class DailyView(Widget):
         yield VerticalScroll(id="timeline")
 
     def on_mount(self) -> None:
-        self._composed = True
-        # Pick up data stashed before mount by the app
+        # Set pending data BEFORE marking _composed so watchers skip refresh,
+        # then do a single render pass at the end.
         if hasattr(self, "_pending_date"):
             self.current_date = self._pending_date
         if hasattr(self, "_pending_events"):
             self.events = self._pending_events
+        if hasattr(self, "_pending_selected_event_id"):
+            self.selected_event_id = self._pending_selected_event_id
+        if hasattr(self, "_pending_loading"):
+            self.loading = self._pending_loading
+        self._composed = True
         self._refresh_header()
         self._refresh_timeline()
 
@@ -76,6 +87,14 @@ class DailyView(Widget):
             self._refresh_timeline()
 
     def watch_events(self, events: list[CalendarEvent]) -> None:
+        if self._composed:
+            self._refresh_timeline()
+
+    def watch_selected_event_id(self, event_id: str | None) -> None:
+        if self._composed:
+            self._refresh_timeline()
+
+    def watch_loading(self, loading: bool) -> None:
         if self._composed:
             self._refresh_timeline()
 
@@ -109,10 +128,17 @@ class DailyView(Widget):
         events_by_hour: dict[int, list[CalendarEvent]] = {h: [] for h in range(24)}
         all_day_events: list[CalendarEvent] = []
 
+        current_day = self.current_date.date()
         for event in self.events:
             if event.all_day:
-                all_day_events.append(event)
-            elif event.start:
+                if event.start:
+                    start_date = event.start.date()
+                    end_date = (
+                        event.end.date() if event.end else start_date + timedelta(days=1)
+                    )
+                    if start_date <= current_day < end_date:
+                        all_day_events.append(event)
+            elif event.start and event.start.date() == current_day:
                 events_by_hour[event.start.hour].append(event)
 
         lines: list[str] = []
@@ -121,8 +147,12 @@ class DailyView(Widget):
         if all_day_events:
             lines.append("┌─── All Day ──────────────────────────────────┐")
             for ev in all_day_events:
+                is_sel = ev.id is not None and ev.id == self.selected_event_id
                 style = self._event_style(ev)
-                lines.append(f"│ [{style}]{ev.summary}[/{style}]")
+                if is_sel:
+                    style += f" on {SELECTION_BG}"
+                marker = "▸" if is_sel else " "
+                lines.append(f"│{marker}[{style}]{ev.summary}[/{style}]")
             lines.append("└──────────────────────────────────────────────┘")
             lines.append("")
 
@@ -140,15 +170,20 @@ class DailyView(Widget):
 
             if slot_events:
                 for ev in slot_events:
+                    is_sel = ev.id is not None and ev.id == self.selected_event_id
                     style = self._event_style(ev)
+                    if is_sel:
+                        style += f" on {SELECTION_BG}"
+                    marker = "▸" if is_sel else " "
                     time_range = ""
                     if ev.start and ev.end:
                         time_range = (
                             f"{ev.start.strftime('%I:%M')}-{ev.end.strftime('%I:%M %p')}"
                         )
-                    lines.append(f"         │ [{style}]{ev.summary}[/{style}] {time_range}")
+                    lines.append(f"         │{marker}[{style}]{ev.summary}[/{style}] {time_range}")
                     if ev.location:
-                        lines.append(f"         │   @ {ev.location}")
+                        loc_bg = f" on {SELECTION_BG}" if is_sel else ""
+                        lines.append(f"         │  [dim{loc_bg}] @ {ev.location}[/dim{loc_bg}]")
                     lines.append(f"         │")
 
         content = "\n".join(lines)

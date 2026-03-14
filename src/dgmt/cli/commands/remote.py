@@ -184,6 +184,44 @@ def cmd_remote_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_remote_push_config(args: argparse.Namespace) -> int:
+    """Push portable config (color rules, calendar settings) to spokes."""
+    from dgmt.core.config import Config
+    from dgmt.remote.config_sync import push_config_to_spoke, push_config_to_all_spokes
+
+    config = Config()
+    host = getattr(args, "host", None)
+
+    if host:
+        # Push to a single spoke
+        print_info(f"Pushing config to {host}...")
+        config_dict = config._to_dict()
+        if push_config_to_spoke(host, config_dict):
+            print_success(f"Config pushed to {host}")
+            return 0
+        else:
+            print_error(f"Failed to push config to {host}")
+            return 1
+    else:
+        # Push to all enabled spokes
+        enabled = config.get_enabled_spokes()
+        if not enabled:
+            print_info("No enabled spokes configured")
+            return 0
+
+        print_info(f"Pushing config to {len(enabled)} spoke(s)...")
+        results = push_config_to_all_spokes(config)
+
+        for name, success in results.items():
+            if success:
+                print_success(f"  {name}: pushed")
+            else:
+                print_error(f"  {name}: failed")
+
+        failures = sum(1 for v in results.values() if not v)
+        return 1 if failures else 0
+
+
 def cmd_remote_ssh(args: argparse.Namespace) -> int:
     """Open SSH session to a remote spoke."""
     from dgmt.remote.ssh import SSHConnection
@@ -265,6 +303,17 @@ def register_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     stop_parser.add_argument("host", help="Spoke name")
     stop_parser.set_defaults(func=cmd_remote_stop)
+
+    # remote push-config
+    push_config_parser = remote_subparsers.add_parser(
+        "push-config",
+        help="Push portable config (color rules, etc.) to spokes",
+    )
+    push_config_parser.add_argument(
+        "host", nargs="?", default=None,
+        help="Spoke name (optional; pushes to all if omitted)",
+    )
+    push_config_parser.set_defaults(func=cmd_remote_push_config)
 
     # remote ssh
     ssh_parser = remote_subparsers.add_parser(

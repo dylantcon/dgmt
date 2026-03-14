@@ -27,6 +27,9 @@ Examples:
 
 Config: ~/.dgmt/config.json
 Logs:   ~/.dgmt/dgmt.log
+
+AI integration:
+  dgmt mcp install        Register as Claude Desktop MCP server
 """,
     )
 
@@ -51,6 +54,7 @@ Logs:   ~/.dgmt/dgmt.log
 
     # Register all command modules
     from dgmt.cli.commands import install, sync, remote, config
+    from dgmt.cli.commands.mcp import register_mcp_commands
     from dgmt.calendar.cli.commands import register_commands as register_cal_commands
 
     install.register_commands(subparsers)
@@ -58,6 +62,7 @@ Logs:   ~/.dgmt/dgmt.log
     remote.register_commands(subparsers)
     config.register_commands(subparsers)
     register_cal_commands(subparsers)
+    register_mcp_commands(subparsers)
 
     return parser
 
@@ -80,6 +85,15 @@ def main(argv: list[str] | None = None) -> int:
                 remote_parser = action.choices.get("remote")
                 if remote_parser:
                     remote_parser.print_help()
+        return 0
+
+    # Handle mcp subcommand without sub-subcommand
+    if args.command == "mcp" and not hasattr(args, "func"):
+        for action in parser._subparsers._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                mcp_parser = action.choices.get("mcp")
+                if mcp_parser:
+                    mcp_parser.print_help()
         return 0
 
     # Handle config without subcommand

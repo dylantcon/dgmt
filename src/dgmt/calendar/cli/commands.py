@@ -73,6 +73,36 @@ def _parse_datetime(s: str) -> datetime:
     raise ValueError(f"Cannot parse datetime: {s!r}. Use format: YYYY-MM-DD HH:MM")
 
 
+RECURRENCE_PRESETS: dict[str, str] = {
+    "daily": "RRULE:FREQ=DAILY",
+    "weekdays": "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+    "weekly": "RRULE:FREQ=WEEKLY",
+    "biweekly": "RRULE:FREQ=WEEKLY;INTERVAL=2",
+    "monthly": "RRULE:FREQ=MONTHLY",
+    "yearly": "RRULE:FREQ=YEARLY",
+}
+
+
+def _parse_recurrence(value: str) -> list[str]:
+    """Parse a recurrence preset name or raw RRULE string.
+
+    Presets: daily, weekdays, weekly, biweekly, monthly, yearly.
+    Use "none" to clear recurrence, or pass a raw RRULE string
+    (must start with "RRULE:").
+    """
+    if value.lower() == "none":
+        return []
+    preset = RECURRENCE_PRESETS.get(value.lower())
+    if preset:
+        return [preset]
+    if not value.startswith("RRULE:"):
+        raise ValueError(
+            f"Invalid recurrence: {value!r}. "
+            f"Use a preset ({', '.join(RECURRENCE_PRESETS)}) or an RRULE string."
+        )
+    return [value]
+
+
 def cmd_auth(args: argparse.Namespace) -> int:
     """Run OAuth authorization flow."""
     tm = TokenManager()
@@ -113,6 +143,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     table.add_column("Date", style="cyan")
     table.add_column("Time", style="green")
     table.add_column("Summary")
+    table.add_column("Location", style="dim cyan")
     table.add_column("ID", style="dim")
 
     for event in events:
@@ -131,7 +162,8 @@ def cmd_list(args: argparse.Namespace) -> int:
         if event.color_id:
             style = ColorRuleEngine.get_rich_style(event.color_id)
 
-        table.add_row(date_str, time_str, f"[{style}]{event.summary}[/{style}]" if style else event.summary, event.id or "")
+        summary_cell = f"[{style}]{event.summary}[/{style}]" if style else event.summary
+        table.add_row(date_str, time_str, summary_cell, event.location or "", event.id or "")
 
     console.print(table)
     return 0
@@ -143,7 +175,15 @@ def cmd_add(args: argparse.Namespace) -> int:
     engine = _get_color_engine()
 
     start = _parse_datetime(args.start)
-    end = _parse_datetime(args.end) if args.end else start + timedelta(hours=1)
+
+    all_day = getattr(args, "all_day", False)
+    if all_day:
+        # For all-day events, strip time component
+        start = start.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = _parse_datetime(args.end) if args.end else start + timedelta(days=1)
+        end = end.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        end = _parse_datetime(args.end) if args.end else start + timedelta(hours=1)
 
     color_id = None
     if args.color:
@@ -154,11 +194,26 @@ def cmd_add(args: argparse.Namespace) -> int:
     else:
         color_id = _resolve_color_interactive(engine, args.summary)
 
+    recurrence: list[str] = []
+    if getattr(args, "recurrence", None):
+        try:
+            recurrence = _parse_recurrence(args.recurrence)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            return 1
+
+    calendar_id = getattr(args, "calendar", None) or "primary"
+
     event = CalendarEvent(
         summary=args.summary,
         start=start,
         end=end,
+        all_day=all_day,
         color_id=color_id,
+        description=getattr(args, "description", None) or "",
+        location=getattr(args, "location", None) or "",
+        recurrence=recurrence,
+        calendar_id=calendar_id,
     )
     created = api.create_event(event)
     console.print(f"[green]Created:[/green] {created.summary} (ID: {created.id})")
@@ -170,7 +225,8 @@ def cmd_edit(args: argparse.Namespace) -> int:
     api = CalendarAPI()
     engine = _get_color_engine()
 
-    event = api.get_event(args.event_id)
+    calendar_id = getattr(args, "calendar", None)
+    event = api.get_event(args.event_id, calendar_id=calendar_id or "primary")
 
     if args.summary:
         event.summary = args.summary
@@ -178,6 +234,33 @@ def cmd_edit(args: argparse.Namespace) -> int:
         event.start = _parse_datetime(args.start)
     if args.end:
         event.end = _parse_datetime(args.end)
+
+    # --description and --location: check `is not None` so "" clears the field
+    if getattr(args, "description", None) is not None:
+        event.description = args.description
+    if getattr(args, "location", None) is not None:
+        event.location = args.location
+
+    # --all-day / --no-all-day toggle
+    if getattr(args, "all_day", False):
+        event.all_day = True
+        if event.start:
+            event.start = event.start.replace(hour=0, minute=0, second=0, microsecond=0)
+        if event.end:
+            event.end = event.end.replace(hour=0, minute=0, second=0, microsecond=0)
+    elif getattr(args, "no_all_day", False):
+        event.all_day = False
+
+    # --recurrence
+    if getattr(args, "recurrence", None) is not None:
+        try:
+            event.recurrence = _parse_recurrence(args.recurrence)
+        except ValueError as e:
+            console.print(f"[red]{e}[/red]")
+            return 1
+
+    if calendar_id:
+        event.calendar_id = calendar_id
 
     if args.color:
         color_id = color_id_from_name(args.color)
@@ -516,6 +599,14 @@ Examples:
     add_parser.add_argument("--start", required=True, help="Start datetime")
     add_parser.add_argument("--end", help="End datetime (default: start + 1 hour)")
     add_parser.add_argument("--color", help="Color name (e.g., Peacock, Tomato)")
+    add_parser.add_argument("--location", help="Event location")
+    add_parser.add_argument("--description", help="Event description")
+    add_parser.add_argument("--all-day", action="store_true", help="Create an all-day event")
+    add_parser.add_argument(
+        "--recurrence",
+        help="Recurrence preset (daily, weekdays, weekly, biweekly, monthly, yearly) or RRULE string",
+    )
+    add_parser.add_argument("--calendar", help="Calendar ID (default: primary)")
     add_parser.set_defaults(func=cmd_add)
 
     # edit
@@ -525,6 +616,16 @@ Examples:
     edit_parser.add_argument("--start", help="New start datetime")
     edit_parser.add_argument("--end", help="New end datetime")
     edit_parser.add_argument("--color", help="Color name")
+    edit_parser.add_argument("--location", help="New location (use empty string to clear)")
+    edit_parser.add_argument("--description", help="New description (use empty string to clear)")
+    edit_all_day_group = edit_parser.add_mutually_exclusive_group()
+    edit_all_day_group.add_argument("--all-day", action="store_true", help="Mark as all-day event")
+    edit_all_day_group.add_argument("--no-all-day", action="store_true", help="Mark as timed event")
+    edit_parser.add_argument(
+        "--recurrence",
+        help='New recurrence (preset, RRULE, or "none" to clear)',
+    )
+    edit_parser.add_argument("--calendar", help="Calendar ID")
     edit_parser.set_defaults(func=cmd_edit)
 
     # delete

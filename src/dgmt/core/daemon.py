@@ -95,7 +95,8 @@ class Daemon:
                 old_watch_paths = set(self._config.hub.watch_paths)
                 new_watch_paths = set(new_config.data.hub.watch_paths)
 
-                # Update config reference
+                # Update config references
+                self._config_obj = new_config
                 self._config = new_config.data
 
                 # Handle watch path changes
@@ -120,8 +121,28 @@ class Daemon:
 
                 self._logger.info("Config reloaded successfully")
 
+                # Push updated config to spokes in background
+                self._push_config_async()
+
             except Exception as e:
                 self._logger.error(f"Failed to reload config: {e}")
+
+    def _push_config_async(self) -> None:
+        """Push config to all spokes in a background daemon thread."""
+        def _do_push():
+            try:
+                from dgmt.remote.config_sync import push_config_to_all_spokes
+                results = push_config_to_all_spokes(self._config_obj)
+                for name, ok in results.items():
+                    if ok:
+                        self._logger.info(f"Config pushed to spoke {name}")
+                    else:
+                        self._logger.warning(f"Config push failed for spoke {name}")
+            except Exception as e:
+                self._logger.error(f"Config push error: {e}")
+
+        t = threading.Thread(target=_do_push, daemon=True, name="config-push")
+        t.start()
 
     def _init_backends(self) -> None:
         """Initialize sync backends based on configuration."""
@@ -295,6 +316,9 @@ class Daemon:
         if self._config.backends.rclone_enabled:
             self._logger.info("Running initial sync...")
             self._sync_all()
+
+        # Push config to spokes (non-blocking)
+        self._push_config_async()
 
         self._logger.info("dgmt running. Press Ctrl+C to stop.")
 

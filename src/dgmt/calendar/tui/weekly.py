@@ -18,12 +18,17 @@ from dgmt.calendar.colors import GOOGLE_COLORS
 # that lets foreground colors (event colors, today accent) show through
 SELECTED_BG = "#2d2030"
 
+# Background tint for the selected *event*
+SELECTION_BG = "#3a3a5c"
+
 
 class WeeklyView(Widget):
     """7-column grid view for a week."""
 
     current_date: reactive[datetime] = reactive(datetime.now)
     events: reactive[list[CalendarEvent]] = reactive(list, always_update=True)
+    selected_event_id: reactive[str | None] = reactive(None)
+    loading: reactive[bool] = reactive(False)
 
     DEFAULT_CSS = """
     WeeklyView {
@@ -68,11 +73,15 @@ class WeeklyView(Widget):
         yield Horizontal(id="week-grid", classes="week-grid")
 
     def on_mount(self) -> None:
-        self._composed = True
         if hasattr(self, "_pending_date"):
             self.current_date = self._pending_date
         if hasattr(self, "_pending_events"):
             self.events = self._pending_events
+        if hasattr(self, "_pending_selected_event_id"):
+            self.selected_event_id = self._pending_selected_event_id
+        if hasattr(self, "_pending_loading"):
+            self.loading = self._pending_loading
+        self._composed = True
         self._refresh()
 
     def watch_current_date(self, date: datetime) -> None:
@@ -80,6 +89,14 @@ class WeeklyView(Widget):
             self._refresh()
 
     def watch_events(self, events: list[CalendarEvent]) -> None:
+        if self._composed:
+            self._refresh()
+
+    def watch_selected_event_id(self, event_id: str | None) -> None:
+        if self._composed:
+            self._refresh()
+
+    def watch_loading(self, loading: bool) -> None:
         if self._composed:
             self._refresh()
 
@@ -150,20 +167,31 @@ class WeeklyView(Widget):
             day_events = events_by_day[i]
             if day_events:
                 for ev in day_events:
+                    is_sel_event = ev.id is not None and ev.id == self.selected_event_id
                     style = self._event_style(ev)
-                    if is_selected:
+                    # Event selection bg wins over day selection bg
+                    if is_sel_event:
+                        style += f" on {SELECTION_BG}"
+                    elif is_selected:
                         style += f" on {SELECTED_BG}"
+                    marker = "▸" if is_sel_event else "-"
                     if ev.all_day:
-                        label = f"[{style}]- {ev.summary}[/{style}]"
+                        label = f"[{style}]{marker} {ev.summary}[/{style}]"
                     else:
                         time_str = ev.start.strftime("%I:%M%p").lstrip("0").lower() if ev.start else ""
-                        label = f"[{style}]- {time_str} {ev.summary}[/{style}]"
+                        label = f"[{style}]{marker} {time_str} {ev.summary}[/{style}]"
                     lines.append(label)
             else:
-                if is_selected:
-                    lines.append(f"[dim on {SELECTED_BG}]  No events[/dim on {SELECTED_BG}]")
+                if self.loading:
+                    if is_selected:
+                        lines.append(f"[dim italic on {SELECTED_BG}]  ...[/dim italic on {SELECTED_BG}]")
+                    else:
+                        lines.append("[dim italic]  ...[/dim italic]")
                 else:
-                    lines.append("[dim]  No events[/dim]")
+                    if is_selected:
+                        lines.append(f"[dim on {SELECTED_BG}]  No events[/dim on {SELECTED_BG}]")
+                    else:
+                        lines.append("[dim]  No events[/dim]")
 
             bottom_border = f"└{'─' * (len(day_label) + 4)}┘"
             if is_today and is_selected:

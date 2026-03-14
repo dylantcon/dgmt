@@ -21,6 +21,12 @@ class CalendarEvent:
     color_id: Optional[str] = None
     calendar_id: str = "primary"
     recurrence: list[str] = field(default_factory=list)
+    recurring_event_id: Optional[str] = None
+
+    @property
+    def is_recurring_instance(self) -> bool:
+        """True if this event is an expanded instance of a recurring series."""
+        return self.recurring_event_id is not None
 
     def to_google_body(self) -> dict[str, Any]:
         """Convert to Google Calendar API request body."""
@@ -90,4 +96,5 @@ class CalendarEvent:
             color_id=data.get("colorId"),
             calendar_id=data.get("organizer", {}).get("email", "primary"),
             recurrence=data.get("recurrence", []),
+            recurring_event_id=data.get("recurringEventId"),
         )
