@@ -146,12 +146,12 @@ class CalendarApp(App):
 
         return start, end
 
-    def _date_in_loaded_range(self) -> bool:
-        """Check if the current date is within the already-loaded range."""
+    def _view_range_loaded(self) -> bool:
+        """Check if the current view's full range is covered by the loaded range."""
         if self._loaded_start is None or self._loaded_end is None:
             return False
-        current = self._current_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        return self._loaded_start <= current < self._loaded_end
+        start, end = self._get_view_range()
+        return self._loaded_start <= start and end <= self._loaded_end
 
     def _fetch_events(self, force: bool = False) -> None:
         """Fetch events, using cache when possible, async worker for network."""
@@ -168,7 +168,7 @@ class CalendarApp(App):
 
         # For day navigation within an already-loaded range, just update the view
         # (the events are already loaded, we just need to re-render with new selected date)
-        if not force and self._date_in_loaded_range() and self._events:
+        if not force and self._view_range_loaded() and self._events:
             self._push_events_to_view()
             return
 
