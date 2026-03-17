@@ -22,6 +22,7 @@ class CalendarEvent:
     calendar_id: str = "primary"
     recurrence: list[str] = field(default_factory=list)
     recurring_event_id: Optional[str] = None
+    reminders: Optional[list[dict[str, Any]]] = None
 
     @property
     def is_recurring_instance(self) -> bool:
@@ -42,6 +43,9 @@ class CalendarEvent:
             body["colorId"] = self.color_id
         if self.recurrence:
             body["recurrence"] = self.recurrence
+
+        if self.reminders is not None:
+            body["reminders"] = {"useDefault": False, "overrides": self.reminders}
 
         if self.all_day:
             if self.start:
@@ -85,6 +89,13 @@ class CalendarEvent:
                 else None
             )
 
+        reminders_data = data.get("reminders", {})
+        reminders = (
+            None
+            if reminders_data.get("useDefault", True)
+            else reminders_data.get("overrides", [])
+        )
+
         return cls(
             id=data.get("id"),
             summary=data.get("summary", ""),
@@ -97,4 +108,5 @@ class CalendarEvent:
             calendar_id=data.get("organizer", {}).get("email", "primary"),
             recurrence=data.get("recurrence", []),
             recurring_event_id=data.get("recurringEventId"),
+            reminders=reminders,
         )

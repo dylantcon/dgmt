@@ -72,8 +72,30 @@ def _event_to_dict(event: CalendarEvent, engine: ColorRuleEngine | None = None) 
         "recurrence": event.recurrence,
         "recurring_event_id": event.recurring_event_id,
         "is_recurring_instance": event.is_recurring_instance,
+        "reminders": event.reminders,
     }
     return d
+
+
+def _parse_reminders(value: Any) -> list[dict[str, Any]] | None:
+    """Parse reminders arg into the CalendarEvent format.
+
+    - absent/None → None (use calendar defaults)
+    - "none" → [] (disable all reminders)
+    - "default" → None (revert to calendar defaults, useful for update)
+    - list of dicts → use directly as overrides
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value.lower() == "none":
+            return []
+        if value.lower() == "default":
+            return None
+        raise ValueError(f"Invalid reminders value: {value!r}. Use 'none', 'default', or an array.")
+    if isinstance(value, list):
+        return value
+    raise ValueError(f"Invalid reminders type: {type(value).__name__}. Use 'none', 'default', or an array.")
 
 
 def _parse_recurrence(value: str) -> list[str]:
@@ -136,6 +158,8 @@ def _create_single_event(args: dict, api: Any) -> CalendarEvent:
     if "recurrence" in args:
         recurrence = _parse_recurrence(args["recurrence"])
 
+    reminders = _parse_reminders(args.get("reminders"))
+
     event = CalendarEvent(
         summary=args["summary"],
         start=start,
@@ -146,6 +170,7 @@ def _create_single_event(args: dict, api: Any) -> CalendarEvent:
         color_id=color_id,
         recurrence=recurrence,
         calendar_id=args.get("calendar_id", "primary"),
+        reminders=reminders,
     )
     return api.create_event(event)
 
@@ -226,6 +251,8 @@ def handle_update_event(args: dict, get_api: Callable) -> str:
         event.color_id = color_id_from_name(args["color"]) or args["color"]
     if "recurrence" in args:
         event.recurrence = _parse_recurrence(args["recurrence"])
+    if "reminders" in args:
+        event.reminders = _parse_reminders(args["reminders"])
     if "calendar_id" in args:
         event.calendar_id = args["calendar_id"]
 
@@ -580,6 +607,240 @@ def handle_clear_range(args: dict, get_api: Callable) -> str:
     }, indent=2)
 
 
+def handle_find_free_time(args: dict, get_api: Callable) -> str:
+    """Find unallocated time blocks in a date range."""
+    api = get_api()
+    start = _parse_dt(args["start"])
+    end = _parse_dt(args["end"])
+    calendar_id = args.get("calendar_id", "primary")
+    min_duration = args.get("min_duration", 0)
+
+    events = api.list_events(start=start, end=end, calendar_id=calendar_id)
+
+    # Build spans from timed events only (all-day events don't block timed slots)
+    timed_spans = sorted(
+        [
+            (max(_ensure_aware(e.start), _ensure_aware(start)),
+             min(_ensure_aware(e.end), _ensure_aware(end)))
+            for e in events
+            if not e.all_day and e.start and e.end
+        ],
+        key=lambda s: s[0],
+    )
+
+    # Merge overlapping spans
+    merged: list[tuple[datetime, datetime]] = []
+    for s, e in timed_spans:
+        if s >= e:
+            continue
+        if merged and s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
+        else:
+            merged.append((s, e))
+
+    # Subtract occupied from full range
+    range_start = _ensure_aware(start)
+    range_end = _ensure_aware(end)
+    free = _subtract_spans([(range_start, range_end)], merged)
+
+    # Filter by min_duration
+    blocks = []
+    total_free = 0
+    for fs, fe in free:
+        dur_minutes = (fe - fs).total_seconds() / 60
+        if dur_minutes >= min_duration:
+            blocks.append({
+                "start": fs.isoformat(),
+                "end": fe.isoformat(),
+                "duration_minutes": round(dur_minutes, 1),
+            })
+            total_free += dur_minutes
+
+    return json.dumps({
+        "free_blocks": blocks,
+        "total_free_minutes": round(total_free, 1),
+    }, indent=2)
+
+
+def handle_move_event(args: dict, get_api: Callable) -> str:
+    """Reschedule an event to a new start time, preserving duration."""
+    api = get_api()
+    calendar_id = args.get("calendar_id", "primary")
+    event = api.get_event(args["event_id"], calendar_id=calendar_id)
+
+    if not event.start or not event.end:
+        raise ValueError("Event has no start/end times.")
+
+    duration = event.end - event.start
+    new_start = _parse_dt(args["new_start"])
+    event.start = new_start
+    event.end = new_start + duration
+
+    updated = api.update_event(event)
+    return json.dumps(_event_to_dict(updated), indent=2)
+
+
+def handle_subdivide_event(args: dict, get_api: Callable) -> str:
+    """Split one event into N contiguous sub-events."""
+    api = get_api()
+    calendar_id = args.get("calendar_id", "primary")
+    event = api.get_event(args["event_id"], calendar_id=calendar_id)
+
+    if event.all_day:
+        raise ValueError("Cannot subdivide all-day events.")
+    if not event.start or not event.end:
+        raise ValueError("Event has no start/end times.")
+
+    ev_start = _ensure_aware(event.start)
+    ev_end = _ensure_aware(event.end)
+    total_seconds = (ev_end - ev_start).total_seconds()
+
+    # Determine split boundaries
+    if "split_points" in args:
+        points = sorted(_parse_dt(p) for p in args["split_points"])
+        for p in points:
+            if p <= ev_start or p >= ev_end:
+                raise ValueError(
+                    f"Split point {p.isoformat()} is outside event range "
+                    f"({ev_start.isoformat()} - {ev_end.isoformat()})."
+                )
+        boundaries = [ev_start] + points + [ev_end]
+    elif "count" in args:
+        count = args["count"]
+        if count < 2:
+            raise ValueError("count must be at least 2.")
+        chunk = total_seconds / count
+        boundaries = [ev_start + timedelta(seconds=chunk * i) for i in range(count + 1)]
+    else:
+        raise ValueError("Provide 'count' or 'split_points'.")
+
+    n = len(boundaries) - 1
+    base_summary = args.get("new_summary", event.summary)
+
+    # Create-first strategy: create all sub-events before deleting original
+    created: list[CalendarEvent] = []
+    failed: list[dict] = []
+    for i in range(n):
+        sub_args: dict[str, Any] = {
+            "summary": f"{base_summary} ({i + 1}/{n})",
+            "start": boundaries[i].isoformat(),
+            "end": boundaries[i + 1].isoformat(),
+            "description": event.description,
+            "location": event.location,
+            "calendar_id": calendar_id,
+        }
+        if args.get("new_color"):
+            sub_args["color"] = args["new_color"]
+        elif event.color_id:
+            sub_args["color"] = event.color_id
+        if event.reminders is not None:
+            sub_args["reminders"] = event.reminders
+        try:
+            created_event = _create_single_event(sub_args, api)
+            created.append(created_event)
+        except Exception as e:
+            failed.append({"index": i, "error": str(e)})
+
+    # Only delete original if ALL sub-events succeeded
+    if not failed:
+        api.delete_event(event.id, calendar_id=calendar_id)
+
+    result: dict[str, Any] = {
+        "original": _event_to_dict(event),
+        "sub_events": [_event_to_dict(e) for e in created],
+        "created_count": len(created),
+    }
+    if failed:
+        result["failed"] = failed
+        result["warning"] = "Some sub-events failed to create. Original event was NOT deleted."
+
+    return json.dumps(result, indent=2)
+
+
+def handle_time_summary(args: dict, get_api: Callable) -> str:
+    """Hours breakdown by color/category for a date range."""
+    api = get_api()
+    start = _parse_dt(args["start"])
+    end = _parse_dt(args["end"])
+    calendar_id = args.get("calendar_id", "primary")
+    group_by = args.get("group_by", "color")
+
+    events = api.list_events(start=start, end=end, calendar_id=calendar_id)
+
+    range_start = _ensure_aware(start)
+    range_end = _ensure_aware(end)
+
+    # Timed events → hours
+    by_group: dict[str, dict[str, Any]] = {}
+    total_hours = 0.0
+    total_events = 0
+
+    # All-day events → days
+    ad_by_group: dict[str, dict[str, Any]] = {}
+    total_days = 0
+
+    for event in events:
+        if not event.start or not event.end:
+            continue
+
+        if event.all_day:
+            # Count days (clipped to range)
+            es = _ensure_aware(event.start)
+            ee = _ensure_aware(event.end)
+            clipped_start = max(es, range_start)
+            clipped_end = min(ee, range_end)
+            days = (clipped_end - clipped_start).days
+            if days <= 0:
+                continue
+
+            key = _get_group_key(event, group_by)
+            if key not in ad_by_group:
+                ad_by_group[key] = {"days": 0, "event_count": 0}
+            ad_by_group[key]["days"] += days
+            ad_by_group[key]["event_count"] += 1
+            total_days += days
+        else:
+            # Timed event → hours (clipped to range)
+            es = _ensure_aware(event.start)
+            ee = _ensure_aware(event.end)
+            clipped_start = max(es, range_start)
+            clipped_end = min(ee, range_end)
+            hours = (clipped_end - clipped_start).total_seconds() / 3600
+            if hours <= 0:
+                continue
+
+            key = _get_group_key(event, group_by)
+            if key not in by_group:
+                by_group[key] = {"hours": 0.0, "event_count": 0}
+            by_group[key]["hours"] = round(by_group[key]["hours"] + hours, 2)
+            by_group[key]["event_count"] += 1
+            total_hours += hours
+            total_events += 1
+
+    result: dict[str, Any] = {
+        "by_color" if group_by == "color" else "by_summary": by_group,
+        "total_hours": round(total_hours, 2),
+        "total_events": total_events,
+    }
+    if ad_by_group or total_days:
+        result["all_day"] = {
+            "by_color" if group_by == "color" else "by_summary": ad_by_group,
+            "total_days": total_days,
+        }
+
+    return json.dumps(result, indent=2)
+
+
+def _get_group_key(event: CalendarEvent, group_by: str) -> str:
+    """Get the grouping key for an event based on group_by mode."""
+    if group_by == "summary":
+        return event.summary or "(no title)"
+    # Default: group by color
+    if event.color_id:
+        return ColorRuleEngine.get_color_name(event.color_id)
+    return "No color"
+
+
 # Dispatch table: tool_name -> handler function
 TOOL_HANDLERS: dict[str, Callable[[dict, Callable], str]] = {
     "list_events": handle_list_events,
@@ -593,4 +854,8 @@ TOOL_HANDLERS: dict[str, Callable[[dict, Callable], str]] = {
     "remove_color_rule": handle_remove_color_rule,
     "list_available_colors": handle_list_available_colors,
     "clear_range": handle_clear_range,
+    "find_free_time": handle_find_free_time,
+    "move_event": handle_move_event,
+    "subdivide_event": handle_subdivide_event,
+    "time_summary": handle_time_summary,
 }

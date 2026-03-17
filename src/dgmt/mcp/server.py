@@ -61,6 +61,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "location": {"type": "string", "description": "Event location."},
                 "color": {"type": "string", "description": "Color name (e.g., 'Peacock', 'Tomato'). See list_available_colors."},
                 "recurrence": {"type": "string", "description": "Recurrence: preset (daily, weekly, monthly, yearly, weekdays, biweekly) or RRULE string."},
+                "reminders": {
+                    "description": "Reminders/notifications. Omit for calendar default. \"none\" to disable. Or array of {\"method\": \"popup\"|\"email\", \"minutes\": N}.",
+                    "oneOf": [
+                        {"type": "string", "enum": ["none"]},
+                        {"type": "array", "items": {"type": "object", "properties": {"method": {"type": "string", "enum": ["popup", "email"]}, "minutes": {"type": "integer"}}, "required": ["method", "minutes"]}},
+                    ],
+                },
                 "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
                 "events": {
                     "type": "array",
@@ -76,6 +83,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             "location": {"type": "string", "description": "Event location."},
                             "color": {"type": "string", "description": "Color name (fuzzy matching supported)."},
                             "recurrence": {"type": "string", "description": "Recurrence preset or RRULE string."},
+                            "reminders": {
+                                "description": "Reminders. Omit for calendar default. \"none\" to disable. Or array of {\"method\": \"popup\"|\"email\", \"minutes\": N}.",
+                                "oneOf": [
+                                    {"type": "string", "enum": ["none"]},
+                                    {"type": "array", "items": {"type": "object", "properties": {"method": {"type": "string", "enum": ["popup", "email"]}, "minutes": {"type": "integer"}}, "required": ["method", "minutes"]}},
+                                ],
+                            },
                             "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
                         },
                         "required": ["summary", "start"],
@@ -99,6 +113,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "location": {"type": "string", "description": "New location. Use empty string to clear."},
                 "color": {"type": "string", "description": "New color name."},
                 "recurrence": {"type": "string", "description": "New recurrence (preset/RRULE, or 'none' to clear)."},
+                "reminders": {
+                    "description": "Reminders. Omit to keep current. \"none\" to disable. \"default\" to revert to calendar defaults. Or array of {\"method\": \"popup\"|\"email\", \"minutes\": N}.",
+                    "oneOf": [
+                        {"type": "string", "enum": ["none", "default"]},
+                        {"type": "array", "items": {"type": "object", "properties": {"method": {"type": "string", "enum": ["popup", "email"]}, "minutes": {"type": "integer"}}, "required": ["method", "minutes"]}},
+                    ],
+                },
                 "calendar_id": {"type": "string", "description": "Calendar ID."},
             },
             "required": ["event_id"],
@@ -193,6 +214,73 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "fill_color": {"type": "string", "description": "Color for fill events (fuzzy matching supported)."},
                 "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
                 "dry_run": {"type": "boolean", "description": "If true, preview deletions and fill events without executing."},
+            },
+            "required": ["start", "end"],
+        },
+    },
+    {
+        "name": "find_free_time",
+        "description": "Find unallocated time blocks in a date range. Only considers timed events (all-day events do not block free slots).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string", "description": "Start of date range (YYYY-MM-DD or YYYY-MM-DD HH:MM)."},
+                "end": {"type": "string", "description": "End of date range."},
+                "min_duration": {"type": "integer", "description": "Minimum free block duration in minutes. Blocks shorter than this are excluded."},
+                "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+            },
+            "required": ["start", "end"],
+        },
+    },
+    {
+        "name": "move_event",
+        "description": "Reschedule an event to a new start time, automatically computing the new end time from the original duration. Preserves the event ID and all metadata.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "The event ID to move."},
+                "new_start": {"type": "string", "description": "New start date/time (YYYY-MM-DD HH:MM or YYYY-MM-DD for all-day)."},
+                "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+            },
+            "required": ["event_id", "new_start"],
+        },
+    },
+    {
+        "name": "subdivide_event",
+        "description": (
+            "Split one event into N contiguous sub-events. Two modes:\n"
+            "- count: divide into N equal parts (min 2).\n"
+            "- split_points: provide explicit datetime boundaries within the event.\n"
+            "Sub-events inherit summary (with '(1/N)' suffix), description, location, color, and reminders. "
+            "Original event is only deleted after all sub-events are successfully created."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "event_id": {"type": "string", "description": "The event ID to subdivide."},
+                "count": {"type": "integer", "description": "Number of equal parts to split into (min 2)."},
+                "split_points": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Explicit split points as datetime strings. Must be within the event's time range.",
+                },
+                "new_summary": {"type": "string", "description": "Override summary for sub-events (default: original summary)."},
+                "new_color": {"type": "string", "description": "Override color for sub-events (default: original color)."},
+                "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+            },
+            "required": ["event_id"],
+        },
+    },
+    {
+        "name": "time_summary",
+        "description": "Get a time usage breakdown for a date range. Groups events by color (default) or summary text. Timed events are reported in hours; all-day events are reported in days.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string", "description": "Start of date range (YYYY-MM-DD or YYYY-MM-DD HH:MM)."},
+                "end": {"type": "string", "description": "End of date range."},
+                "group_by": {"type": "string", "enum": ["color", "summary"], "description": "How to group events. Default: 'color'."},
+                "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
             },
             "required": ["start", "end"],
         },
