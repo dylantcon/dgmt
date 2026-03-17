@@ -11,7 +11,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Input, Label, Static, Select
 
 from dgmt.calendar.models import CalendarEvent
-from dgmt.calendar.colors import ColorRuleEngine, GOOGLE_COLORS, color_id_from_name
+from dgmt.calendar.colors import ColorRuleEngine, GOOGLE_COLORS, color_id_from_name, fuzzy_color_match
 from dgmt.calendar.tui.color_picker import ColorPicker
 
 
@@ -84,6 +84,12 @@ class EventFormScreen(Screen):
     }
 
     #color-suggestion {
+        height: 1;
+        margin-bottom: 1;
+        color: $accent;
+    }
+
+    #color-match-hint {
         height: 1;
         margin-bottom: 1;
         color: $accent;
@@ -214,6 +220,8 @@ class EventFormScreen(Screen):
                     classes="form-input",
                 )
 
+            yield Static("", id="color-match-hint")
+
             # Recurrence
             with Horizontal(classes="form-row"):
                 yield Label("Repeat:", classes="form-label")
@@ -300,9 +308,19 @@ class EventFormScreen(Screen):
                 suggestion.update("")
 
         elif event.input.id == "color-input":
-            cid = color_id_from_name(event.value)
-            if cid:
-                self.selected_color_id = cid
+            hint = self.query_one("#color-match-hint", Static)
+            match = fuzzy_color_match(event.value)
+            if match:
+                self.selected_color_id = match.color_id
+                if match.match_type == "exact":
+                    hint.update(f"  Color: {match.color_name}")
+                elif match.match_type == "prefix":
+                    hint.update(f"  Matched: {match.color_name}")
+                else:
+                    hint.update(f"  Did you mean: {match.color_name}?")
+            else:
+                self.selected_color_id = None
+                hint.update("")
 
         elif event.input.id == "custom-rrule-input":
             self._recurrence_rule = event.value.strip()

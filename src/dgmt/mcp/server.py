@@ -18,13 +18,15 @@ from dgmt.mcp.tools import TOOL_HANDLERS
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "list_events",
-        "description": "List Google Calendar events in a date range. Returns events with id, summary, start, end, location, description, color, and recurrence.",
+        "description": "List Google Calendar events in a date range with optional filtering. Returns events with id, summary, start, end, location, description, color, recurrence, recurring_event_id, and is_recurring_instance.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "start": {"type": "string", "description": "Start date/time (YYYY-MM-DD or YYYY-MM-DD HH:MM). Defaults to today."},
                 "end": {"type": "string", "description": "End date/time. Defaults to start + 7 days."},
                 "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+                "color": {"type": "string", "description": "Filter by color name (fuzzy matching supported)."},
+                "summary_contains": {"type": "string", "description": "Filter to events whose summary contains this text (case-insensitive)."},
             },
         },
     },
@@ -42,12 +44,17 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "create_event",
-        "description": "Create a new Google Calendar event. Supports all-day events, recurrence, location, description, and color.",
+        "description": (
+            "Create Google Calendar events. Two modes:\n"
+            "- Single: provide summary + start (and optional fields) at the top level.\n"
+            "- Batch: provide an 'events' array of event objects.\n"
+            "Do not mix both modes."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "summary": {"type": "string", "description": "Event title."},
-                "start": {"type": "string", "description": "Start date/time (YYYY-MM-DD HH:MM or YYYY-MM-DD for all-day)."},
+                "summary": {"type": "string", "description": "Event title (single mode)."},
+                "start": {"type": "string", "description": "Start date/time (single mode). YYYY-MM-DD HH:MM or YYYY-MM-DD for all-day."},
                 "end": {"type": "string", "description": "End date/time. Defaults to start + 1 hour (or +1 day for all-day)."},
                 "all_day": {"type": "boolean", "description": "Whether this is an all-day event."},
                 "description": {"type": "string", "description": "Event description."},
@@ -55,8 +62,26 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "color": {"type": "string", "description": "Color name (e.g., 'Peacock', 'Tomato'). See list_available_colors."},
                 "recurrence": {"type": "string", "description": "Recurrence: preset (daily, weekly, monthly, yearly, weekdays, biweekly) or RRULE string."},
                 "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+                "events": {
+                    "type": "array",
+                    "description": "Batch mode: array of event objects to create.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "summary": {"type": "string", "description": "Event title."},
+                            "start": {"type": "string", "description": "Start date/time."},
+                            "end": {"type": "string", "description": "End date/time."},
+                            "all_day": {"type": "boolean", "description": "Whether this is an all-day event."},
+                            "description": {"type": "string", "description": "Event description."},
+                            "location": {"type": "string", "description": "Event location."},
+                            "color": {"type": "string", "description": "Color name (fuzzy matching supported)."},
+                            "recurrence": {"type": "string", "description": "Recurrence preset or RRULE string."},
+                            "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+                        },
+                        "required": ["summary", "start"],
+                    },
+                },
             },
-            "required": ["summary", "start"],
         },
     },
     {
@@ -81,14 +106,29 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "delete_event",
-        "description": "Delete a Google Calendar event by its ID.",
+        "description": (
+            "Delete Google Calendar events. Three modes:\n"
+            "- Single: provide event_id.\n"
+            "- Batch by IDs: provide event_ids array.\n"
+            "- Range: provide start + end (with optional color/summary_contains filters).\n"
+            "All modes support dry_run to preview without deleting."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "event_id": {"type": "string", "description": "The event ID to delete."},
+                "event_id": {"type": "string", "description": "Single event ID to delete."},
+                "event_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Batch mode: list of event IDs to delete.",
+                },
+                "start": {"type": "string", "description": "Start of date range (range mode)."},
+                "end": {"type": "string", "description": "End of date range (range mode)."},
+                "color": {"type": "string", "description": "Filter by color name (range mode, fuzzy matching supported)."},
+                "summary_contains": {"type": "string", "description": "Filter by summary text (range mode, case-insensitive)."},
                 "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+                "dry_run": {"type": "boolean", "description": "If true, preview what would be deleted without actually deleting."},
             },
-            "required": ["event_id"],
         },
     },
     {
@@ -137,6 +177,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {},
+        },
+    },
+    {
+        "name": "clear_range",
+        "description": "Delete events in a date range (with optional filters) and optionally fill the gaps with new events. Useful for clearing a time period and replacing with placeholder events.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start": {"type": "string", "description": "Start of date range."},
+                "end": {"type": "string", "description": "End of date range."},
+                "color": {"type": "string", "description": "Filter: only delete events with this color (fuzzy matching supported)."},
+                "summary_contains": {"type": "string", "description": "Filter: only delete events whose summary contains this text (case-insensitive)."},
+                "fill_summary": {"type": "string", "description": "If provided, create fill events in the gaps left by deleted events with this summary."},
+                "fill_color": {"type": "string", "description": "Color for fill events (fuzzy matching supported)."},
+                "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
+                "dry_run": {"type": "boolean", "description": "If true, preview deletions and fill events without executing."},
+            },
+            "required": ["start", "end"],
         },
     },
 ]

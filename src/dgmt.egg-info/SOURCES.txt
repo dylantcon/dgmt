@@ -27,6 +27,7 @@ src/dgmt/calendar/tui/color_picker.py
 src/dgmt/calendar/tui/daily.py
 src/dgmt/calendar/tui/event_form.py
 src/dgmt/calendar/tui/monthly.py
+src/dgmt/calendar/tui/scope_modal.py
 src/dgmt/calendar/tui/weekly.py
 src/dgmt/cli/__init__.py
 src/dgmt/cli/formatters.py

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import difflib
 from dataclasses import dataclass
 from typing import Optional
 
@@ -27,9 +28,61 @@ COLOR_NAME_TO_ID: dict[str, str] = {
 }
 
 
+@dataclass
+class ColorMatch:
+    """Result of a fuzzy color match attempt."""
+
+    color_id: str
+    color_name: str
+    match_type: str  # "exact", "prefix", "fuzzy"
+
+
+def fuzzy_color_match(name: str) -> Optional[ColorMatch]:
+    """Match a color name using exact, prefix, or fuzzy matching.
+
+    Match strategy (in priority order):
+    1. Exact: case-insensitive exact match
+    2. Prefix: unique color name starting with the input
+    3. Fuzzy: difflib close match (only for inputs >= 3 chars, cutoff 0.6)
+    """
+    if not name:
+        return None
+
+    lower = name.lower()
+
+    # 1. Exact match
+    if lower in COLOR_NAME_TO_ID:
+        cid = COLOR_NAME_TO_ID[lower]
+        cname = GOOGLE_COLORS[cid][0]
+        return ColorMatch(color_id=cid, color_name=cname, match_type="exact")
+
+    # 2. Prefix match — must be unambiguous (exactly one match)
+    prefix_matches = [
+        (cname_lower, cid)
+        for cname_lower, cid in COLOR_NAME_TO_ID.items()
+        if cname_lower.startswith(lower)
+    ]
+    if len(prefix_matches) == 1:
+        cid = prefix_matches[0][1]
+        cname = GOOGLE_COLORS[cid][0]
+        return ColorMatch(color_id=cid, color_name=cname, match_type="prefix")
+
+    # 3. Fuzzy match — only for inputs with 3+ chars to avoid nonsense
+    if len(lower) >= 3:
+        all_names = list(COLOR_NAME_TO_ID.keys())
+        close = difflib.get_close_matches(lower, all_names, n=1, cutoff=0.6)
+        if close:
+            cid = COLOR_NAME_TO_ID[close[0]]
+            cname = GOOGLE_COLORS[cid][0]
+            return ColorMatch(color_id=cid, color_name=cname, match_type="fuzzy")
+
+    return None
+
+
 def color_id_from_name(name: str) -> Optional[str]:
-    """Get color ID from color name (case-insensitive)."""
-    return COLOR_NAME_TO_ID.get(name.lower())
+    """Get color ID from color name (fuzzy matching supported)."""
+    match = fuzzy_color_match(name)
+    return match.color_id if match else None
 
 
 @dataclass
