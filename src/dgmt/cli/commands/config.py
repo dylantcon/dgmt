@@ -142,6 +142,42 @@ def cmd_config_remove_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_config_tz(args: argparse.Namespace) -> int:
+    """Set or show the configured timezone."""
+    from zoneinfo import ZoneInfo, available_timezones
+
+    from dgmt.core.config import Config
+
+    config = Config()
+
+    if args.list:
+        zones = sorted(available_timezones())
+        if not args.all:
+            # Filter to common regions
+            common_prefixes = ("US/", "America/", "Europe/", "Asia/", "Pacific/", "Australia/")
+            zones = [z for z in zones if any(z.startswith(p) for p in common_prefixes)]
+        for z in zones:
+            print(z)
+        return 0
+
+    if args.name:
+        tz_name = args.name
+        try:
+            ZoneInfo(tz_name)
+        except KeyError:
+            print_error(f"Unknown timezone: '{tz_name}'")
+            print_info("Use 'dgmt config tz --list' to see available timezones")
+            return 1
+
+        config._data.timezone = tz_name
+        config.save()
+        print_success(f"Timezone set to: {tz_name}")
+    else:
+        print(config.data.timezone)
+
+    return 0
+
+
 def cmd_config_backend(args: argparse.Namespace) -> int:
     """Set or show default backend."""
     from dgmt.core.config import Config
@@ -217,6 +253,16 @@ def register_commands(subparsers: argparse._SubParsersAction) -> None:
     )
     remove_watch_parser.add_argument("path", help="Path to remove")
     remove_watch_parser.set_defaults(func=cmd_config_remove_watch)
+
+    # config tz
+    tz_parser = config_subparsers.add_parser(
+        "tz",
+        help="Set or show configured timezone",
+    )
+    tz_parser.add_argument("name", nargs="?", help="IANA timezone ID (e.g. America/Chicago)")
+    tz_parser.add_argument("--list", action="store_true", help="List available timezones (common ones)")
+    tz_parser.add_argument("--all", action="store_true", help="With --list, show all timezones")
+    tz_parser.set_defaults(func=cmd_config_tz)
 
     # config backend
     backend_parser = config_subparsers.add_parser(

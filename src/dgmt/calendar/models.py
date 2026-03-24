@@ -53,15 +53,18 @@ class CalendarEvent:
             if self.end:
                 body["end"] = {"date": self.end.strftime("%Y-%m-%d")}
         else:
+            from dgmt.core.config import get_timezone_name
+
+            tz_name = get_timezone_name()
             if self.start:
                 body["start"] = {
                     "dateTime": self.start.isoformat(),
-                    "timeZone": "America/New_York",
+                    "timeZone": tz_name,
                 }
             if self.end:
                 body["end"] = {
                     "dateTime": self.end.isoformat(),
-                    "timeZone": "America/New_York",
+                    "timeZone": tz_name,
                 }
 
         return body

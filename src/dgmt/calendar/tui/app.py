@@ -19,6 +19,7 @@ from dgmt.calendar.tui.daily import DailyView
 from dgmt.calendar.tui.weekly import WeeklyView
 from dgmt.calendar.tui.monthly import MonthlyView
 from dgmt.calendar.tui.event_form import EventFormScreen
+from dgmt.calendar.tui.confirm_modal import ConfirmModalScreen
 from dgmt.calendar.tui.scope_modal import ScopeModalScreen
 from dgmt.core.config import load_config
 
@@ -103,10 +104,24 @@ class CalendarApp(App):
         self.run_worker(self._warm_api, thread=True)
         self._switch_to_view(self._current_view)
         self._fetch_events()
+        # Align clock tick to the next minute boundary, then repeat every 60s
+        seconds_until_next_minute = 60 - datetime.now().second
+        self.set_timer(seconds_until_next_minute, self._start_clock)
 
     def _warm_api(self) -> None:
         """Pre-build the API service object in a background thread."""
         self._api._get_service()
+
+    def _start_clock(self) -> None:
+        """Fire the first tick at the minute boundary, then start the interval."""
+        self._tick_clock()
+        self.set_interval(60, self._tick_clock)
+
+    def _tick_clock(self) -> None:
+        """Periodic callback to refresh time-sensitive view elements."""
+        view = self._view_widget
+        if isinstance(view, DailyView) and view._composed:
+            view._refresh_timeline(scroll_to_now=False)
 
     def _update_status(self, loading: bool = False) -> None:
         """Update the status bar with current date range and view mode."""
@@ -399,14 +414,22 @@ class CalendarApp(App):
             self.notify("No event selected", severity="warning")
             return
 
-        if event.is_recurring_instance:
-            def on_scope(scope: Optional[str]) -> None:
-                if scope is not None:
-                    self._do_delete(event, scope)
+        summary = event.summary or "(untitled)"
+        message = f"[bold]Delete[/bold] [bold red]{summary}[/bold red]?"
 
-            self.push_screen(ScopeModalScreen(action_label="delete"), on_scope)
-        else:
-            self._do_delete(event, "this")
+        def on_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            if event.is_recurring_instance:
+                def on_scope(scope: Optional[str]) -> None:
+                    if scope is not None:
+                        self._do_delete(event, scope)
+
+                self.push_screen(ScopeModalScreen(action_label="delete"), on_scope)
+            else:
+                self._do_delete(event, "this")
+
+        self.push_screen(ConfirmModalScreen(message), on_confirm)
 
     def _do_delete(self, event: CalendarEvent, scope: str) -> None:
         """Execute a delete with the given scope."""

@@ -24,6 +24,8 @@ Examples:
   dgmt config           Show configuration
   dgmt cal              Launch calendar TUI
   dgmt cal list         List upcoming events
+  dgmt canvas list      List Canvas assignments
+  dgmt canvas complete  Mark assignment done
 
 Config: ~/.dgmt/config.json
 Logs:   ~/.dgmt/dgmt.log
@@ -56,12 +58,14 @@ AI integration:
     from dgmt.cli.commands import install, sync, remote, config
     from dgmt.cli.commands.mcp import register_mcp_commands
     from dgmt.calendar.cli.commands import register_commands as register_cal_commands
+    from dgmt.canvas.cli import register_commands as register_canvas_commands
 
     install.register_commands(subparsers)
     sync.register_commands(subparsers)
     remote.register_commands(subparsers)
     config.register_commands(subparsers)
     register_cal_commands(subparsers)
+    register_canvas_commands(subparsers)
     register_mcp_commands(subparsers)
 
     return parser
@@ -94,6 +98,15 @@ def main(argv: list[str] | None = None) -> int:
                 mcp_parser = action.choices.get("mcp")
                 if mcp_parser:
                     mcp_parser.print_help()
+        return 0
+
+    # Handle canvas subcommand without sub-subcommand
+    if args.command == "canvas" and not hasattr(args, "func"):
+        for action in parser._subparsers._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                canvas_parser = action.choices.get("canvas")
+                if canvas_parser:
+                    canvas_parser.print_help()
         return 0
 
     # Handle config without subcommand

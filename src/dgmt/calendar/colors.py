@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import difflib
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 
 # Google Calendar color IDs mapped to (name, hex, ansi_256_code)
@@ -87,11 +87,18 @@ def color_id_from_name(name: str) -> Optional[str]:
 
 @dataclass
 class ColorRule:
-    """A rule that maps an event summary pattern to a color."""
+    """A rule that maps an event summary pattern to a color and optional reminders.
+
+    The reminders field follows CalendarEvent three-state semantics:
+    - None  → no override (caller/calendar default applies)
+    - []    → disable all reminders
+    - [...]  → custom overrides (e.g. [{"method": "popup", "minutes": 10}])
+    """
 
     pattern: str
     color_id: str
     case_sensitive: bool = False
+    reminders: Optional[list[dict[str, Any]]] = field(default=None)
 
     def matches(self, summary: str) -> bool:
         """Check if this rule matches the given summary."""
@@ -101,11 +108,14 @@ class ColorRule:
 
     def to_dict(self) -> dict:
         """Serialize to dict for config storage."""
-        return {
+        d: dict[str, Any] = {
             "pattern": self.pattern,
             "color_id": self.color_id,
             "case_sensitive": self.case_sensitive,
         }
+        if self.reminders is not None:
+            d["reminders"] = self.reminders
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> ColorRule:
@@ -114,11 +124,20 @@ class ColorRule:
             pattern=data["pattern"],
             color_id=data["color_id"],
             case_sensitive=data.get("case_sensitive", False),
+            reminders=data.get("reminders"),
         )
 
 
+@dataclass
+class RuleDefaults:
+    """Resolved defaults from a color rule match."""
+
+    color_id: Optional[str] = None
+    reminders: Optional[list[dict[str, Any]]] = None
+
+
 class ColorRuleEngine:
-    """Engine for matching event summaries to colors via rules."""
+    """Engine for matching event summaries to colors and reminders via rules."""
 
     def __init__(self, rules: Optional[list[ColorRule]] = None) -> None:
         self._rules = rules or []
@@ -143,12 +162,21 @@ class ColorRuleEngine:
         """Return all rules that match the given summary."""
         return [rule for rule in self._rules if rule.matches(summary)]
 
-    def resolve_color(self, summary: str) -> Optional[str]:
-        """Resolve color for a summary. Returns color_id if exactly one match, None otherwise."""
+    def resolve(self, summary: str) -> RuleDefaults:
+        """Resolve defaults for a summary from matching rules.
+
+        Returns color_id and reminders if exactly one rule matches.
+        If zero or multiple rules match, returns empty defaults.
+        """
         matches = self.match(summary)
         if len(matches) == 1:
-            return matches[0].color_id
-        return None
+            rule = matches[0]
+            return RuleDefaults(color_id=rule.color_id, reminders=rule.reminders)
+        return RuleDefaults()
+
+    def resolve_color(self, summary: str) -> Optional[str]:
+        """Resolve color for a summary. Returns color_id if exactly one match, None otherwise."""
+        return self.resolve(summary).color_id
 
     @staticmethod
     def get_rich_style(color_id: str) -> str:

@@ -17,11 +17,14 @@ from dgmt.calendar.colors import (
     ColorRule,
     ColorRuleEngine,
     color_id_from_name,
+    RuleDefaults,
 )
-from dgmt.core.config import load_config
+from dgmt.core.config import get_timezone, load_config
 
-# Default timezone — matches CalendarEvent.to_google_body() convention
-DEFAULT_TZ = ZoneInfo("America/New_York")
+
+def _tz() -> ZoneInfo:
+    """Get the configured timezone."""
+    return get_timezone()
 
 # Same presets as the CLI (Phase 1)
 RECURRENCE_PRESETS: dict[str, str] = {
@@ -37,20 +40,20 @@ RECURRENCE_PRESETS: dict[str, str] = {
 def _parse_dt(s: str) -> datetime:
     """Parse datetime strings in common formats, returning tz-aware datetimes.
 
-    If the input string has no timezone info, DEFAULT_TZ (America/New_York) is applied.
+    If the input string has no timezone info, the configured timezone is applied.
     If it already has a timezone (e.g. from isoformat()), it's preserved.
     """
     # Try fromisoformat first — handles offset-aware strings like "2026-03-18T09:00:00-04:00"
     try:
         dt = datetime.fromisoformat(s)
-        return dt if dt.tzinfo is not None else dt.replace(tzinfo=DEFAULT_TZ)
+        return dt if dt.tzinfo is not None else dt.replace(tzinfo=_tz())
     except ValueError:
         pass
 
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %I:%M %p", "%Y-%m-%d"):
         try:
             dt = datetime.strptime(s, fmt)
-            return dt.replace(tzinfo=DEFAULT_TZ)
+            return dt.replace(tzinfo=_tz())
         except ValueError:
             continue
     raise ValueError(f"Cannot parse datetime: {s!r}. Use YYYY-MM-DD HH:MM")
@@ -117,9 +120,9 @@ def _parse_recurrence(value: str) -> list[str]:
 
 
 def _ensure_aware(dt: datetime) -> datetime:
-    """Ensure a datetime is timezone-aware. Applies DEFAULT_TZ to naive datetimes."""
+    """Ensure a datetime is timezone-aware. Applies _tz() to naive datetimes."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=DEFAULT_TZ)
+        return dt.replace(tzinfo=_tz())
     return dt
 
 
@@ -136,6 +139,14 @@ def _filter_events(
         needle = summary_contains.lower()
         events = [e for e in events if needle in (e.summary or "").lower()]
     return events
+
+
+def _resolve_rule_defaults(summary: str) -> RuleDefaults:
+    """Load color rules from config and resolve defaults for a summary."""
+    config = load_config()
+    rules = [ColorRule.from_dict(r) for r in config.data.calendar.color_rules]
+    engine = ColorRuleEngine(rules)
+    return engine.resolve(summary)
 
 
 def _create_single_event(args: dict, api: Any) -> CalendarEvent:
@@ -160,8 +171,17 @@ def _create_single_event(args: dict, api: Any) -> CalendarEvent:
 
     reminders = _parse_reminders(args.get("reminders"))
 
+    # Apply color rule defaults for fields the caller didn't explicitly set
+    summary = args["summary"]
+    if summary and (color_id is None or reminders is None):
+        defaults = _resolve_rule_defaults(summary)
+        if color_id is None and defaults.color_id is not None:
+            color_id = defaults.color_id
+        if reminders is None and defaults.reminders is not None:
+            reminders = defaults.reminders
+
     event = CalendarEvent(
-        summary=args["summary"],
+        summary=summary,
         start=start,
         end=end,
         all_day=all_day,
@@ -181,7 +201,7 @@ def _create_single_event(args: dict, api: Any) -> CalendarEvent:
 def handle_list_events(args: dict, get_api: Callable) -> str:
     """List events in a date range with optional filtering."""
     api = get_api()
-    start = _parse_dt(args["start"]) if "start" in args else datetime.now(DEFAULT_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+    start = _parse_dt(args["start"]) if "start" in args else datetime.now(_tz()).replace(hour=0, minute=0, second=0, microsecond=0)
     end = _parse_dt(args["end"]) if "end" in args else start + timedelta(days=7)
     calendar_id = args.get("calendar_id", "primary")
 
@@ -229,9 +249,8 @@ def handle_create_event(args: dict, get_api: Callable) -> str:
     return json.dumps(_event_to_dict(created), indent=2)
 
 
-def handle_update_event(args: dict, get_api: Callable) -> str:
-    """Update any event field."""
-    api = get_api()
+def _update_single_event(args: dict, api: Any) -> CalendarEvent:
+    """Apply update fields to a single event and save via the API. Returns the updated event."""
     calendar_id = args.get("calendar_id", "primary")
     event = api.get_event(args["event_id"], calendar_id=calendar_id)
 
@@ -256,7 +275,37 @@ def handle_update_event(args: dict, get_api: Callable) -> str:
     if "calendar_id" in args:
         event.calendar_id = args["calendar_id"]
 
-    updated = api.update_event(event)
+    return api.update_event(event)
+
+
+def handle_update_event(args: dict, get_api: Callable) -> str:
+    """Update one or many events.
+
+    - Batch mode: ``updates`` array present → update each, return batch response.
+    - Single mode: top-level ``event_id`` → update one, return flat event dict.
+    """
+    api = get_api()
+
+    if "updates" in args:
+        succeeded: list[dict] = []
+        failed: list[dict] = []
+        for i, update_args in enumerate(args["updates"]):
+            try:
+                updated = _update_single_event(update_args, api)
+                succeeded.append({"index": i, "event": _event_to_dict(updated)})
+            except Exception as e:
+                failed.append({"index": i, "error": str(e), "event_id": update_args.get("event_id", "")})
+        return json.dumps({
+            "succeeded": succeeded,
+            "failed": failed,
+            "updated_count": len(succeeded),
+            "failed_count": len(failed),
+        }, indent=2)
+
+    if "event_id" not in args:
+        raise ValueError("Single mode requires 'event_id', or use 'updates' for batch mode.")
+
+    updated = _update_single_event(args, api)
     return json.dumps(_event_to_dict(updated), indent=2)
 
 
@@ -366,6 +415,7 @@ def handle_list_color_rules(args: dict, get_api: Callable) -> str:
                 "color_id": r.color_id,
                 "color_name": ColorRuleEngine.get_color_name(r.color_id),
                 "case_sensitive": r.case_sensitive,
+                "reminders": r.reminders,
             }
             for r in engine.rules
         ],
@@ -385,10 +435,13 @@ def handle_add_color_rule(args: dict, get_api: Callable) -> str:
             f"Available: {', '.join(name for name, _, _ in GOOGLE_COLORS.values())}"
         )
 
+    reminders = _parse_reminders(args.get("reminders"))
+
     rule = ColorRule(
         pattern=args["pattern"],
         color_id=color_id,
         case_sensitive=args.get("case_sensitive", False),
+        reminders=reminders,
     )
     engine.add_rule(rule)
 
@@ -399,6 +452,7 @@ def handle_add_color_rule(args: dict, get_api: Callable) -> str:
         "added": True,
         "pattern": rule.pattern,
         "color_name": ColorRuleEngine.get_color_name(color_id),
+        "reminders": rule.reminders,
     })
 
 
@@ -841,6 +895,157 @@ def _get_group_key(event: CalendarEvent, group_by: str) -> str:
     return "No color"
 
 
+# --- Canvas tool handlers ---
+
+
+def handle_list_canvas_assignments(args: dict, get_api: Callable) -> str:
+    """List Canvas assignments with optional filtering."""
+    from dgmt.canvas.fetcher import CanvasFetcher
+
+    fetcher = CanvasFetcher()
+    assignments = fetcher.get_assignments()
+
+    # Filter by course
+    if "course" in args:
+        code = args["course"].replace(" ", "").upper()
+        assignments = [a for a in assignments if a.course == code]
+
+    # Filter by due dates
+    if "due_before" in args:
+        before = _parse_dt(args["due_before"])
+        assignments = [a for a in assignments if a.due and a.due < before]
+    if "due_after" in args:
+        after = _parse_dt(args["due_after"])
+        assignments = [a for a in assignments if a.due and a.due > after]
+
+    # Filter by completion status
+    include_completed = args.get("include_completed", False)
+    if not include_completed:
+        assignments = [a for a in assignments if not a.completed]
+
+    return json.dumps([a.to_dict() for a in assignments], indent=2)
+
+
+def handle_complete_canvas_assignment(args: dict, get_api: Callable) -> str:
+    """Mark one or many Canvas assignments as complete.
+
+    - Batch mode: ``identifiers`` array present → complete each, return batch response.
+    - Single mode: top-level ``identifier`` → complete one, return flat dict.
+    """
+    from dgmt.canvas.fetcher import CanvasFetcher
+
+    fetcher = CanvasFetcher()
+    assignments = fetcher.get_assignments()
+
+    if "identifiers" in args:
+        succeeded: list[dict] = []
+        failed: list[dict] = []
+        for i, identifier in enumerate(args["identifiers"]):
+            try:
+                match = _find_canvas_assignment(assignments, identifier)
+                fetcher.completion_store.mark_complete(match.uid, match.summary, match.course)
+                succeeded.append({"index": i, "uid": match.uid, "title": match.title, "course": match.course})
+            except Exception as e:
+                failed.append({"index": i, "identifier": identifier, "error": str(e)})
+        return json.dumps({
+            "succeeded": succeeded,
+            "failed": failed,
+            "completed_count": len(succeeded),
+            "failed_count": len(failed),
+        }, indent=2)
+
+    if "identifier" not in args:
+        raise ValueError("Provide 'identifier' or 'identifiers' array.")
+
+    match = _find_canvas_assignment(assignments, args["identifier"])
+    fetcher.completion_store.mark_complete(match.uid, match.summary, match.course)
+    return json.dumps({
+        "completed": True,
+        "uid": match.uid,
+        "title": match.title,
+        "course": match.course,
+    })
+
+
+def handle_uncomplete_canvas_assignment(args: dict, get_api: Callable) -> str:
+    """Unmark one or many Canvas assignments as complete.
+
+    - Batch mode: ``identifiers`` array present → uncomplete each, return batch response.
+    - Single mode: top-level ``identifier`` → uncomplete one, return flat dict.
+    """
+    from dgmt.canvas.fetcher import CanvasFetcher
+
+    fetcher = CanvasFetcher()
+    assignments = fetcher.get_assignments()
+
+    if "identifiers" in args:
+        succeeded: list[dict] = []
+        failed: list[dict] = []
+        for i, identifier in enumerate(args["identifiers"]):
+            try:
+                match = _find_canvas_assignment(assignments, identifier)
+                removed = fetcher.completion_store.mark_incomplete(match.uid)
+                succeeded.append({"index": i, "uid": match.uid, "title": match.title, "course": match.course, "was_completed": removed})
+            except Exception as e:
+                failed.append({"index": i, "identifier": identifier, "error": str(e)})
+        return json.dumps({
+            "succeeded": succeeded,
+            "failed": failed,
+            "uncompleted_count": len(succeeded),
+            "failed_count": len(failed),
+        }, indent=2)
+
+    if "identifier" not in args:
+        raise ValueError("Provide 'identifier' or 'identifiers' array.")
+
+    match = _find_canvas_assignment(assignments, args["identifier"])
+    removed = fetcher.completion_store.mark_incomplete(match.uid)
+    return json.dumps({
+        "uncompleted": removed,
+        "uid": match.uid,
+        "title": match.title,
+        "course": match.course,
+    })
+
+
+def handle_fetch_canvas_assignments(args: dict, get_api: Callable) -> str:
+    """Force-fetch assignments from the Canvas .ics feed."""
+    from dgmt.canvas.fetcher import CanvasFetcher
+
+    fetcher = CanvasFetcher()
+    assignments = fetcher.get_assignments(force_fetch=True)
+    return json.dumps({
+        "fetched": True,
+        "count": len(assignments),
+        "assignments": [a.to_dict() for a in assignments],
+    }, indent=2)
+
+
+def _find_canvas_assignment(assignments, identifier: str):
+    """Find a canvas assignment by UID or fuzzy match. Raises ValueError on failure."""
+    # Exact UID match
+    for a in assignments:
+        if a.uid == identifier:
+            return a
+
+    # Fuzzy match
+    needle = identifier.lower()
+    matches = [
+        a for a in assignments
+        if needle in a.summary.lower() or needle in a.title.lower()
+    ]
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) == 0:
+        raise ValueError(f"No assignment matching '{identifier}'")
+    names = [f"{a.title} ({a.course})" for a in matches[:5]]
+    raise ValueError(
+        f"Multiple matches for '{identifier}': {', '.join(names)}. "
+        "Use a more specific search or the full UID."
+    )
+
+
 # Dispatch table: tool_name -> handler function
 TOOL_HANDLERS: dict[str, Callable[[dict, Callable], str]] = {
     "list_events": handle_list_events,
@@ -858,4 +1063,8 @@ TOOL_HANDLERS: dict[str, Callable[[dict, Callable], str]] = {
     "move_event": handle_move_event,
     "subdivide_event": handle_subdivide_event,
     "time_summary": handle_time_summary,
+    "list_canvas_assignments": handle_list_canvas_assignments,
+    "complete_canvas_assignment": handle_complete_canvas_assignment,
+    "uncomplete_canvas_assignment": handle_uncomplete_canvas_assignment,
+    "fetch_canvas_assignments": handle_fetch_canvas_assignments,
 }

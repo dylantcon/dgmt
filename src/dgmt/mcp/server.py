@@ -100,11 +100,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "update_event",
-        "description": "Update an existing Google Calendar event. Only provided fields are changed.",
+        "description": (
+            "Update Google Calendar events. Two modes:\n"
+            "- Single: provide event_id + fields to change at the top level.\n"
+            "- Batch: provide an 'updates' array of update objects (each must include event_id).\n"
+            "Only provided fields are changed. Do not mix both modes."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "event_id": {"type": "string", "description": "The event ID to update."},
+                "event_id": {"type": "string", "description": "The event ID to update (single mode)."},
                 "summary": {"type": "string", "description": "New event title."},
                 "start": {"type": "string", "description": "New start date/time."},
                 "end": {"type": "string", "description": "New end date/time."},
@@ -121,8 +126,34 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     ],
                 },
                 "calendar_id": {"type": "string", "description": "Calendar ID."},
+                "updates": {
+                    "type": "array",
+                    "description": "Batch mode: array of update objects. Each must include event_id plus fields to change.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "event_id": {"type": "string", "description": "The event ID to update."},
+                            "summary": {"type": "string", "description": "New event title."},
+                            "start": {"type": "string", "description": "New start date/time."},
+                            "end": {"type": "string", "description": "New end date/time."},
+                            "all_day": {"type": "boolean", "description": "Toggle all-day status."},
+                            "description": {"type": "string", "description": "New description."},
+                            "location": {"type": "string", "description": "New location."},
+                            "color": {"type": "string", "description": "New color name."},
+                            "recurrence": {"type": "string", "description": "Recurrence preset or RRULE string."},
+                            "reminders": {
+                                "description": "Reminders. Omit to keep current. \"none\" to disable. \"default\" for calendar defaults. Or array.",
+                                "oneOf": [
+                                    {"type": "string", "enum": ["none", "default"]},
+                                    {"type": "array", "items": {"type": "object", "properties": {"method": {"type": "string", "enum": ["popup", "email"]}, "minutes": {"type": "integer"}}, "required": ["method", "minutes"]}},
+                                ],
+                            },
+                            "calendar_id": {"type": "string", "description": "Calendar ID."},
+                        },
+                        "required": ["event_id"],
+                    },
+                },
             },
-            "required": ["event_id"],
         },
     },
     {
@@ -162,7 +193,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "list_color_rules",
-        "description": "List all configured dgmt color rules that auto-assign colors to events based on summary patterns.",
+        "description": "List all configured dgmt color rules that auto-assign colors and reminders to events based on summary patterns.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -170,13 +201,20 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "add_color_rule",
-        "description": "Add a new color rule. When an event summary contains the pattern, it will be assigned the specified color.",
+        "description": "Add a new color rule. When an event summary contains the pattern, it will be assigned the specified color and optional reminder defaults. These defaults are auto-applied on event creation when the caller doesn't explicitly set color/reminders.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "Text pattern to match in event summaries."},
                 "color": {"type": "string", "description": "Color name (e.g., 'Peacock', 'Tomato'). See list_available_colors."},
                 "case_sensitive": {"type": "boolean", "description": "Whether matching is case-sensitive. Default: false."},
+                "reminders": {
+                    "description": "Default reminders for matching events. Omit for no reminder override. \"none\" to disable reminders. Or array of {\"method\": \"popup\"|\"email\", \"minutes\": N}.",
+                    "oneOf": [
+                        {"type": "string", "enum": ["none"]},
+                        {"type": "array", "items": {"type": "object", "properties": {"method": {"type": "string", "enum": ["popup", "email"]}, "minutes": {"type": "integer"}}, "required": ["method", "minutes"]}},
+                    ],
+                },
             },
             "required": ["pattern", "color"],
         },
@@ -283,6 +321,57 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "calendar_id": {"type": "string", "description": "Calendar ID. Defaults to 'primary'."},
             },
             "required": ["start", "end"],
+        },
+    },
+    {
+        "name": "list_canvas_assignments",
+        "description": "List Canvas LMS assignments from the .ics subscription feed. Returns assignments with uid, summary, course, title, due date, completion status, and URL. By default only shows upcoming incomplete assignments.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "course": {"type": "string", "description": "Filter by course code (e.g., 'CIS4930')."},
+                "due_before": {"type": "string", "description": "Show assignments due before this date (YYYY-MM-DD or YYYY-MM-DD HH:MM)."},
+                "due_after": {"type": "string", "description": "Show assignments due after this date."},
+                "include_completed": {"type": "boolean", "description": "Include completed assignments. Default: false."},
+            },
+        },
+    },
+    {
+        "name": "complete_canvas_assignment",
+        "description": "Mark one or many Canvas assignments as complete. Single mode: provide 'identifier'. Batch mode: provide 'identifiers' array to complete multiple in one call.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "identifier": {"type": "string", "description": "Single assignment UID or fuzzy summary/title match."},
+                "identifiers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Array of assignment UIDs or fuzzy matches to complete in batch.",
+                },
+            },
+        },
+    },
+    {
+        "name": "uncomplete_canvas_assignment",
+        "description": "Unmark one or many Canvas assignments as complete. Single mode: provide 'identifier'. Batch mode: provide 'identifiers' array.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "identifier": {"type": "string", "description": "Single assignment UID or fuzzy summary/title match."},
+                "identifiers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Array of assignment UIDs or fuzzy matches to uncomplete in batch.",
+                },
+            },
+        },
+    },
+    {
+        "name": "fetch_canvas_assignments",
+        "description": "Force-fetch assignments from the Canvas .ics feed, bypassing the cache. Returns all fetched assignments.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
         },
     },
 ]

@@ -113,7 +113,7 @@ class DailyView(Widget):
             header.update(f"[bold on {SELECTED_BG}] {date_str} [/bold on {SELECTED_BG}]")
             header.remove_class("day-header-today")
 
-    def _refresh_timeline(self) -> None:
+    def _refresh_timeline(self, scroll_to_now: bool = True) -> None:
         try:
             timeline = self.query_one("#timeline", VerticalScroll)
         except NoMatches:
@@ -189,8 +189,8 @@ class DailyView(Widget):
         content = "\n".join(lines)
         timeline.mount(Static(content))
 
-        # Scroll to current hour if today
-        if is_today:
+        # Scroll to current hour if today (skip on timer ticks to preserve scroll)
+        if is_today and scroll_to_now:
             self.call_after_refresh(self._scroll_to_now)
 
     def _scroll_to_now(self) -> None:

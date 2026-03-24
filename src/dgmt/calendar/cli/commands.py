@@ -126,14 +126,67 @@ def cmd_auth_revoke(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_events_markdown(events: list[CalendarEvent], start: datetime, end: datetime) -> str:
+    """Format events as markdown for Templater daily notes."""
+    if not events:
+        return "_No events._"
+
+    # Sort by start time (all-day events first, then by start)
+    events = sorted(events, key=lambda e: (
+        not e.all_day,
+        e.start or datetime.max,
+    ))
+
+    lines: list[str] = []
+    current_date = None
+
+    # Group by date when spanning multiple days
+    multi_day = (end - start).days > 1
+
+    for event in events:
+        if not event.start:
+            continue
+
+        event_date = event.start.date()
+
+        if multi_day and event_date != current_date:
+            current_date = event_date
+            lines.append(f"### {event.start.strftime('%A, %b %d')}")
+            lines.append("")
+
+        if event.all_day:
+            time_str = "All day"
+        elif event.start and event.end:
+            time_str = (
+                f"{event.start.strftime('%I:%M %p').lstrip('0')} - "
+                f"{event.end.strftime('%I:%M %p').lstrip('0')}"
+            )
+        else:
+            time_str = ""
+
+        loc = f" @ {event.location}" if event.location else ""
+        lines.append(rf"- **{time_str}** $\rightarrow$ {event.summary}{loc}")
+
+    return "\n".join(lines)
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     """List events."""
+    from dgmt.core.config import get_timezone
+    tz = get_timezone()
+
     api = CalendarAPI()
-    date = _parse_datetime(args.date) if args.date else datetime.now()
-    start = date.replace(hour=0, minute=0, second=0, microsecond=0)
+    date = _parse_datetime(args.date) if args.date else datetime.now(tz)
+    start = date.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=tz)
     end = start + timedelta(days=args.days)
 
     events = api.list_events(start=start, end=end)
+
+    fmt = getattr(args, "format", "table")
+
+    if fmt in ("markdown", "md"):
+        print(_format_events_markdown(events, start, end))
+        return 0
 
     if not events:
         console.print("[dim]No events found.[/dim]")
@@ -591,6 +644,12 @@ Examples:
     list_parser = cal_sub.add_parser("list", help="List events")
     list_parser.add_argument("--date", help="Start date (YYYY-MM-DD)")
     list_parser.add_argument("--days", type=int, default=7, help="Number of days (default: 7)")
+    list_parser.add_argument(
+        "--format", "-f",
+        choices=["table", "markdown", "md"],
+        default="table",
+        help="Output format (default: table)",
+    )
     list_parser.set_defaults(func=cmd_list)
 
     # add

@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from zoneinfo import ZoneInfo
 
 from dgmt.utils.fluent import FluentBuilder
 from dgmt.utils.paths import expand_path, get_config_file, get_log_file
@@ -71,15 +72,35 @@ class CalendarConfig:
 
 
 @dataclass
+class CanvasConfig:
+    """Canvas LMS .ics feed configuration."""
+
+    enabled: bool = False
+    ics_url_file: str = "~/.dgmt/secrets/canvas_ics_url"
+    fetch_interval_seconds: int = 900
+    cache_file: str = "~/.dgmt/cache/canvas_assignments.json"
+    completion_file: str = "~/.dgmt/state/canvas_completed.json"
+    lookahead_days: int = 30
+    course_aliases: dict[str, str] = field(default_factory=dict)
+    assignment_keywords: list[str] = field(default_factory=lambda: [
+        "assignment", "homework", "hw", "quiz", "exam", "test",
+        "project", "lab", "midterm", "final", "paper", "essay",
+        "discussion", "presentation", "report", "problem set", "ps",
+    ])
+
+
+@dataclass
 class ConfigData:
     """Complete configuration data structure."""
 
+    timezone: str = "America/New_York"
     hub: HubConfig = field(default_factory=HubConfig)
     defaults: dict[str, Any] = field(default_factory=lambda: {"backend": "syncthing"})
     spokes: dict[str, SpokeConfig] = field(default_factory=dict)
     backends: BackendSettings = field(default_factory=BackendSettings)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     calendar: CalendarConfig = field(default_factory=CalendarConfig)
+    canvas: CanvasConfig = field(default_factory=CanvasConfig)
 
 
 class Config(FluentBuilder["Config"]):
@@ -116,6 +137,9 @@ class Config(FluentBuilder["Config"]):
 
     def _from_dict(self, data: dict[str, Any]) -> None:
         """Populate config from dictionary (for loading from JSON)."""
+        # Timezone
+        self._data.timezone = data.get("timezone", "America/New_York")
+
         # Hub config
         if "hub" in data:
             hub = data["hub"]
@@ -208,9 +232,32 @@ class Config(FluentBuilder["Config"]):
             self._data.calendar.default_view = cal.get("default_view", "weekly")
             self._data.calendar.color_rules = cal.get("color_rules", [])
 
+        # Canvas
+        if "canvas" in data:
+            cv = data["canvas"]
+            self._data.canvas.enabled = cv.get("enabled", False)
+            self._data.canvas.ics_url_file = cv.get(
+                "ics_url_file", "~/.dgmt/secrets/canvas_ics_url"
+            )
+            self._data.canvas.fetch_interval_seconds = cv.get("fetch_interval_seconds", 900)
+            self._data.canvas.cache_file = cv.get(
+                "cache_file", "~/.dgmt/cache/canvas_assignments.json"
+            )
+            self._data.canvas.completion_file = cv.get(
+                "completion_file", "~/.dgmt/state/canvas_completed.json"
+            )
+            self._data.canvas.lookahead_days = cv.get("lookahead_days", 30)
+            self._data.canvas.course_aliases = cv.get("course_aliases", {})
+            self._data.canvas.assignment_keywords = cv.get("assignment_keywords", [
+                "assignment", "homework", "hw", "quiz", "exam", "test",
+                "project", "lab", "midterm", "final", "paper", "essay",
+                "discussion", "presentation", "report", "problem set", "ps",
+            ])
+
     def _to_dict(self) -> dict[str, Any]:
         """Convert config to dictionary for JSON serialization."""
         return {
+            "timezone": self._data.timezone,
             "hub": {
                 "watch_paths": [str(p) for p in self._data.hub.watch_paths],
                 "debounce_seconds": self._data.hub.debounce_seconds,
@@ -253,6 +300,16 @@ class Config(FluentBuilder["Config"]):
                 "default_calendar_id": self._data.calendar.default_calendar_id,
                 "default_view": self._data.calendar.default_view,
                 "color_rules": self._data.calendar.color_rules,
+            },
+            "canvas": {
+                "enabled": self._data.canvas.enabled,
+                "ics_url_file": self._data.canvas.ics_url_file,
+                "fetch_interval_seconds": self._data.canvas.fetch_interval_seconds,
+                "cache_file": self._data.canvas.cache_file,
+                "completion_file": self._data.canvas.completion_file,
+                "lookahead_days": self._data.canvas.lookahead_days,
+                "course_aliases": self._data.canvas.course_aliases,
+                "assignment_keywords": self._data.canvas.assignment_keywords,
             },
         }
 
@@ -404,3 +461,13 @@ def init_config(config_path: Optional[Path] = None) -> Config:
     if not config._config_path.exists():
         config.watch("~/Obsidian").save()
     return config
+
+
+def get_timezone() -> ZoneInfo:
+    """Get the configured timezone as a ZoneInfo object."""
+    return ZoneInfo(load_config().data.timezone)
+
+
+def get_timezone_name() -> str:
+    """Get the configured timezone IANA name."""
+    return load_config().data.timezone
