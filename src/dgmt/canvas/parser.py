@@ -99,7 +99,7 @@ def is_assignment(summary: str, keywords: list[str], has_rrule: bool) -> bool:
     return any(kw.lower() in summary_lower for kw in keywords)
 
 
-def _normalize_dt(dt_value) -> Optional[datetime]:
+def _normalize_dt(dt_value, tz) -> Optional[datetime]:
     """Normalize an icalendar date/datetime to a tz-aware datetime.
 
     The icalendar library returns either date or datetime objects.
@@ -112,12 +112,12 @@ def _normalize_dt(dt_value) -> Optional[datetime]:
 
     if isinstance(dt, datetime):
         if dt.tzinfo is None:
-            return dt.replace(tzinfo=get_timezone())
+            return dt.replace(tzinfo=tz)
         return dt
 
     if isinstance(dt, date):
         # Convert date to datetime at end of day (11:59 PM)
-        return datetime(dt.year, dt.month, dt.day, 23, 59, 0, tzinfo=get_timezone())
+        return datetime(dt.year, dt.month, dt.day, 23, 59, 0, tzinfo=tz)
 
     return None
 
@@ -127,6 +127,7 @@ def parse_ics(ical_text: str, config: CanvasConfig) -> list[Assignment]:
 
     Filters by assignment keywords and excludes recurring events.
     """
+    tz = get_timezone()
     cal = Calendar.from_ical(ical_text)
     assignments: list[Assignment] = []
 
@@ -161,7 +162,7 @@ def parse_ics(ical_text: str, config: CanvasConfig) -> list[Assignment]:
         title = extract_title(summary, course)
 
         # Canvas uses DTSTART for due dates
-        due = _normalize_dt(component.get("DTSTART"))
+        due = _normalize_dt(component.get("DTSTART"), tz)
 
         description = str(component.get("DESCRIPTION", ""))
 
@@ -182,5 +183,6 @@ def parse_ics(ical_text: str, config: CanvasConfig) -> list[Assignment]:
         ))
 
     # Sort by due date (None last)
-    assignments.sort(key=lambda a: (a.due is None, a.due or datetime.max.replace(tzinfo=get_timezone())))
+    far_future = datetime.max.replace(tzinfo=tz)
+    assignments.sort(key=lambda a: (a.due is None, a.due or far_future))
     return assignments

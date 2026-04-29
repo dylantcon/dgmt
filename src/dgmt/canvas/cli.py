@@ -22,9 +22,9 @@ Examples:
   dgmt canvas list              List upcoming assignments
   dgmt canvas list --format md  Markdown output for Templater
   dgmt canvas list --course CIS4930
-  dgmt canvas complete "HW5"    Mark assignment complete
-  dgmt canvas uncomplete "HW5"  Unmark assignment
-  dgmt canvas courses           List detected courses
+  dgmt canvas complete "HW5" "Quiz 3"  Mark one or more done
+  dgmt canvas uncomplete "HW5"         Unmark assignment(s)
+  dgmt canvas courses                  List detected courses
 """,
     )
 
@@ -69,13 +69,23 @@ Examples:
     list_parser.set_defaults(func=cmd_list)
 
     # --- complete ---
-    complete_parser = canvas_sub.add_parser("complete", help="Mark assignment complete")
-    complete_parser.add_argument("identifier", help="Assignment UID or fuzzy summary match")
+    complete_parser = canvas_sub.add_parser("complete", help="Mark assignment(s) complete")
+    complete_parser.add_argument(
+        "identifiers",
+        nargs="+",
+        metavar="IDENTIFIER",
+        help="One or more assignment UIDs or fuzzy summary matches",
+    )
     complete_parser.set_defaults(func=cmd_complete)
 
     # --- uncomplete ---
-    uncomplete_parser = canvas_sub.add_parser("uncomplete", help="Unmark assignment complete")
-    uncomplete_parser.add_argument("identifier", help="Assignment UID or fuzzy summary match")
+    uncomplete_parser = canvas_sub.add_parser("uncomplete", help="Unmark assignment(s) complete")
+    uncomplete_parser.add_argument(
+        "identifiers",
+        nargs="+",
+        metavar="IDENTIFIER",
+        help="One or more assignment UIDs or fuzzy summary matches",
+    )
     uncomplete_parser.set_defaults(func=cmd_uncomplete)
 
     # --- courses ---
@@ -229,7 +239,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_complete(args: argparse.Namespace) -> int:
-    """Mark an assignment as complete."""
+    """Mark one or more assignments as complete."""
     try:
         fetcher = _get_fetcher()
         assignments = fetcher.get_assignments()
@@ -237,18 +247,22 @@ def cmd_complete(args: argparse.Namespace) -> int:
         print_error(f"Failed to load assignments: {e}")
         return 1
 
-    match, error = _fuzzy_match(assignments, args.identifier)
-    if error:
-        print_error(error)
-        return 1
+    failures = 0
+    for identifier in args.identifiers:
+        match, error = _fuzzy_match(assignments, identifier)
+        if error:
+            print_error(error)
+            failures += 1
+            continue
 
-    fetcher.completion_store.mark_complete(match.uid, match.summary, match.course)
-    print_success(f"Completed: {match.title} ({match.course})")
-    return 0
+        fetcher.completion_store.mark_complete(match.uid, match.summary, match.course)
+        print_success(f"Completed: {match.title} ({match.course})")
+
+    return 1 if failures else 0
 
 
 def cmd_uncomplete(args: argparse.Namespace) -> int:
-    """Unmark an assignment as complete."""
+    """Unmark one or more assignments as complete."""
     try:
         fetcher = _get_fetcher()
         assignments = fetcher.get_assignments()
@@ -256,16 +270,20 @@ def cmd_uncomplete(args: argparse.Namespace) -> int:
         print_error(f"Failed to load assignments: {e}")
         return 1
 
-    match, error = _fuzzy_match(assignments, args.identifier)
-    if error:
-        print_error(error)
-        return 1
+    failures = 0
+    for identifier in args.identifiers:
+        match, error = _fuzzy_match(assignments, identifier)
+        if error:
+            print_error(error)
+            failures += 1
+            continue
 
-    if fetcher.completion_store.mark_incomplete(match.uid):
-        print_success(f"Uncompleted: {match.title} ({match.course})")
-    else:
-        print_info(f"Was not marked complete: {match.title}")
-    return 0
+        if fetcher.completion_store.mark_incomplete(match.uid):
+            print_success(f"Uncompleted: {match.title} ({match.course})")
+        else:
+            print_info(f"Was not marked complete: {match.title}")
+
+    return 1 if failures else 0
 
 
 def cmd_courses(args: argparse.Namespace) -> int:

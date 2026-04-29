@@ -463,11 +463,41 @@ def init_config(config_path: Optional[Path] = None) -> Config:
     return config
 
 
+# Process-level cache for timezone. The config file is re-read at most
+# once per (path, mtime) tuple, so changes still take effect within long-
+# running processes (the daemon) without re-parsing JSON on every call.
+# Most CLI invocations live a few seconds — this cache is the difference
+# between one disk read and one-per-VEVENT during ICS parsing.
+_TZ_CACHE: dict[tuple[str, float], ZoneInfo] = {}
+_TZ_NAME_CACHE: dict[tuple[str, float], str] = {}
+
+
+def _tz_cache_key() -> tuple[str, float]:
+    path = get_config_file()
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        mtime = 0.0
+    return (str(path), mtime)
+
+
 def get_timezone() -> ZoneInfo:
     """Get the configured timezone as a ZoneInfo object."""
-    return ZoneInfo(load_config().data.timezone)
+    key = _tz_cache_key()
+    cached = _TZ_CACHE.get(key)
+    if cached is not None:
+        return cached
+    tz = ZoneInfo(load_config().data.timezone)
+    _TZ_CACHE[key] = tz
+    return tz
 
 
 def get_timezone_name() -> str:
     """Get the configured timezone IANA name."""
-    return load_config().data.timezone
+    key = _tz_cache_key()
+    cached = _TZ_NAME_CACHE.get(key)
+    if cached is not None:
+        return cached
+    name = load_config().data.timezone
+    _TZ_NAME_CACHE[key] = name
+    return name

@@ -1,53 +1,64 @@
-"""Calendar CLI subcommands."""
+"""Calendar CLI subcommands.
+
+Heavy imports (rich, googleapiclient, google.auth) are deferred to the
+command handlers — `register_commands` runs at every `dgmt` invocation,
+so keeping it light shaves >1.5s off cold startup for every subcommand
+(including `dgmt --help`). See `_lazy_imports()` below.
+"""
 
 from __future__ import annotations
 
 import argparse
 import sys
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from rich.console import Console
-from rich.table import Table
-from rich import box
-
-from dgmt.calendar.auth import TokenManager
-from dgmt.calendar.api import CalendarAPI
-from dgmt.calendar.models import CalendarEvent
-from dgmt.calendar.colors import (
-    GOOGLE_COLORS,
-    ColorRule,
-    ColorRuleEngine,
-    color_id_from_name,
-)
-from dgmt.core.config import load_config
+if TYPE_CHECKING:
+    from rich.console import Console as _Console
+    from dgmt.calendar.colors import ColorRuleEngine
+    from dgmt.calendar.models import CalendarEvent
+    from dgmt.calendar.api import CalendarAPI
 
 
-console = Console()
+_console: Optional["_Console"] = None
 
 
-def _get_color_engine() -> ColorRuleEngine:
+def _get_console() -> "_Console":
+    """Lazy-init the rich console (deferring rich import)."""
+    global _console
+    if _console is None:
+        from rich.console import Console
+        _console = Console()
+    return _console
+
+
+def _get_color_engine() -> "ColorRuleEngine":
     """Load color rules from config."""
+    from dgmt.calendar.colors import ColorRule, ColorRuleEngine
+    from dgmt.core.config import load_config
     config = load_config()
     rules = [ColorRule.from_dict(r) for r in config.data.calendar.color_rules]
     return ColorRuleEngine(rules)
 
 
-def _save_color_rules(engine: ColorRuleEngine) -> None:
+def _save_color_rules(engine: "ColorRuleEngine") -> None:
     """Save color rules back to config."""
+    from dgmt.core.config import load_config
     config = load_config()
     config._data.calendar.color_rules = [r.to_dict() for r in engine.rules]
     config.save()
 
 
-def _resolve_color_interactive(engine: ColorRuleEngine, summary: str) -> Optional[str]:
+def _resolve_color_interactive(engine: "ColorRuleEngine", summary: str) -> Optional[str]:
     """Resolve color for a summary, prompting on ambiguity."""
+    from dgmt.calendar.colors import ColorRuleEngine
     matches = engine.match(summary)
     if len(matches) == 0:
         return None
     if len(matches) == 1:
         return matches[0].color_id
     # Ambiguous: prompt user
+    console = _get_console()
     console.print("[yellow]Multiple color rules match this event:[/yellow]")
     for i, rule in enumerate(matches, 1):
         name = ColorRuleEngine.get_color_name(rule.color_id)
@@ -105,6 +116,8 @@ def _parse_recurrence(value: str) -> list[str]:
 
 def cmd_auth(args: argparse.Namespace) -> int:
     """Run OAuth authorization flow."""
+    from dgmt.calendar.auth import TokenManager
+    console = _get_console()
     tm = TokenManager()
     try:
         tm.authorize()
@@ -118,6 +131,8 @@ def cmd_auth(args: argparse.Namespace) -> int:
 
 def cmd_auth_revoke(args: argparse.Namespace) -> int:
     """Revoke stored token."""
+    from dgmt.calendar.auth import TokenManager
+    console = _get_console()
     tm = TokenManager()
     if tm.revoke():
         console.print("[green]Token revoked.[/green]")
@@ -126,7 +141,7 @@ def cmd_auth_revoke(args: argparse.Namespace) -> int:
     return 0
 
 
-def _format_events_markdown(events: list[CalendarEvent], start: datetime, end: datetime) -> str:
+def _format_events_markdown(events: list["CalendarEvent"], start: datetime, end: datetime) -> str:
     """Format events as markdown for Templater daily notes."""
     if not events:
         return "_No events._"
@@ -172,7 +187,13 @@ def _format_events_markdown(events: list[CalendarEvent], start: datetime, end: d
 
 def cmd_list(args: argparse.Namespace) -> int:
     """List events."""
+    from rich.table import Table
+    from rich import box
+    from dgmt.calendar.api import CalendarAPI
+    from dgmt.calendar.colors import ColorRuleEngine
     from dgmt.core.config import get_timezone
+
+    console = _get_console()
     tz = get_timezone()
 
     api = CalendarAPI()
@@ -224,6 +245,11 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 def cmd_add(args: argparse.Namespace) -> int:
     """Create a new event."""
+    from dgmt.calendar.api import CalendarAPI
+    from dgmt.calendar.colors import color_id_from_name
+    from dgmt.calendar.models import CalendarEvent
+
+    console = _get_console()
     api = CalendarAPI()
     engine = _get_color_engine()
 
@@ -275,6 +301,10 @@ def cmd_add(args: argparse.Namespace) -> int:
 
 def cmd_edit(args: argparse.Namespace) -> int:
     """Edit an existing event."""
+    from dgmt.calendar.api import CalendarAPI
+    from dgmt.calendar.colors import color_id_from_name
+
+    console = _get_console()
     api = CalendarAPI()
     engine = _get_color_engine()
 
@@ -333,6 +363,8 @@ def cmd_edit(args: argparse.Namespace) -> int:
 
 def cmd_delete(args: argparse.Namespace) -> int:
     """Delete an event."""
+    from dgmt.calendar.api import CalendarAPI
+    console = _get_console()
     api = CalendarAPI()
     api.delete_event(args.event_id)
     console.print(f"[green]Deleted event:[/green] {args.event_id}")
@@ -341,6 +373,9 @@ def cmd_delete(args: argparse.Namespace) -> int:
 
 def cmd_view(args: argparse.Namespace) -> int:
     """Show a rich-formatted calendar view."""
+    from dgmt.calendar.api import CalendarAPI
+    from dgmt.core.config import load_config
+
     api = CalendarAPI()
     date = _parse_datetime(args.date) if args.date else datetime.now()
     start = date.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -366,8 +401,13 @@ def cmd_view(args: argparse.Namespace) -> int:
     return 0
 
 
-def _render_daily(api: CalendarAPI, date: datetime) -> None:
+def _render_daily(api: "CalendarAPI", date: datetime) -> None:
     """Render daily view using Rich."""
+    from rich.table import Table
+    from rich import box
+    from dgmt.calendar.colors import ColorRuleEngine
+
+    console = _get_console()
     end = date + timedelta(days=1)
     events = api.list_events(start=date, end=end)
 
@@ -408,8 +448,13 @@ def _render_daily(api: CalendarAPI, date: datetime) -> None:
     console.print(table)
 
 
-def _render_weekly(api: CalendarAPI, date: datetime) -> None:
+def _render_weekly(api: "CalendarAPI", date: datetime) -> None:
     """Render weekly view using Rich."""
+    from rich.table import Table
+    from rich import box
+    from dgmt.calendar.colors import ColorRuleEngine
+
+    console = _get_console()
     # Find start of week (Sunday)
     weekday = date.weekday()  # Monday=0
     sunday = date - timedelta(days=(weekday + 1) % 7)
@@ -459,10 +504,14 @@ def _render_weekly(api: CalendarAPI, date: datetime) -> None:
     console.print(table)
 
 
-def _render_monthly(api: CalendarAPI, date: datetime) -> None:
+def _render_monthly(api: "CalendarAPI", date: datetime) -> None:
     """Render monthly view using Rich."""
     import calendar
+    from rich.table import Table
+    from rich import box
+    from dgmt.calendar.colors import ColorRuleEngine
 
+    console = _get_console()
     year, month = date.year, date.month
     cal = calendar.Calendar(firstweekday=6)  # Sunday start
     month_days = list(cal.itermonthdays2(year, month))
@@ -513,6 +562,11 @@ def _render_monthly(api: CalendarAPI, date: datetime) -> None:
 
 def cmd_colors_list(args: argparse.Namespace) -> int:
     """List color rules with previews."""
+    from rich.table import Table
+    from rich import box
+    from dgmt.calendar.colors import GOOGLE_COLORS, ColorRuleEngine
+
+    console = _get_console()
     engine = _get_color_engine()
 
     # Show available colors
@@ -551,6 +605,13 @@ def cmd_colors_list(args: argparse.Namespace) -> int:
 
 def cmd_colors_add(args: argparse.Namespace) -> int:
     """Add a color rule."""
+    from dgmt.calendar.colors import (
+        GOOGLE_COLORS,
+        ColorRule,
+        ColorRuleEngine,
+        color_id_from_name,
+    )
+    console = _get_console()
     engine = _get_color_engine()
 
     color_id = color_id_from_name(args.color)
@@ -572,6 +633,7 @@ def cmd_colors_add(args: argparse.Namespace) -> int:
 
 def cmd_colors_remove(args: argparse.Namespace) -> int:
     """Remove a color rule."""
+    console = _get_console()
     engine = _get_color_engine()
 
     if engine.remove_rule(args.pattern):
@@ -584,6 +646,11 @@ def cmd_colors_remove(args: argparse.Namespace) -> int:
 
 def cmd_calendars(args: argparse.Namespace) -> int:
     """List available calendars."""
+    from rich.table import Table
+    from rich import box
+    from dgmt.calendar.api import CalendarAPI
+
+    console = _get_console()
     api = CalendarAPI()
     calendars = api.list_calendars()
 

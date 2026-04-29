@@ -16,16 +16,27 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Examples:
-  dgmt run              Run daemon in foreground
-  dgmt install          Install as system service
-  dgmt status           Show service and sync status
-  dgmt sync             Trigger manual sync
-  dgmt remote add pc    Add a remote machine
-  dgmt config           Show configuration
-  dgmt cal              Launch calendar TUI
-  dgmt cal list         List upcoming events
-  dgmt canvas list      List Canvas assignments
-  dgmt canvas complete  Mark assignment done
+  dgmt run                  Run daemon in foreground
+  dgmt install              Install as system service
+  dgmt status               Show service and sync status
+  dgmt logs                 Tail and follow the dgmt log
+  dgmt sync                 Trigger manual sync
+  dgmt remote add pc        Add a remote machine
+  dgmt remote push-config   Push portable config to all spokes
+  dgmt config               Show configuration
+  dgmt config tz            Show or set timezone
+  dgmt cal                  Launch calendar TUI
+  dgmt cal list             List upcoming events
+  dgmt canvas auth set      Configure Canvas .ics URL
+  dgmt canvas list          List Canvas assignments
+  dgmt canvas complete ...  Mark one or more assignments done
+
+Cross-device config sync:
+  Color rules, calendar/canvas settings, and the default view can be
+  pushed from the hub to every enabled spoke over SSH:
+    dgmt remote push-config           # push to all enabled spokes
+    dgmt remote push-config <host>    # push to a single spoke
+  Sensitive sections (backends, hub watch paths) are stripped before send.
 
 Config: ~/.dgmt/config.json
 Logs:   ~/.dgmt/dgmt.log

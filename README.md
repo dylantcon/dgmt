@@ -76,20 +76,26 @@ dgmt remote remove <host>
 dgmt remote list
 dgmt remote status <host>
 dgmt remote ssh <host>
+dgmt remote push-config [<host>]        # Sync portable config to spokes
+
+# Logs
+dgmt logs [-n LINES]                    # Tail and follow ~/.dgmt/dgmt.log
 
 # Configuration
-dgmt config           # Show config
-dgmt config edit      # Open in $EDITOR
+dgmt config                             # Show config
+dgmt config edit                        # Open in $EDITOR
 dgmt config set <key> <value>
 dgmt config add-watch <path>
-dgmt config backend <name>
+dgmt config remove-watch <path>
+dgmt config backend [<name>]            # Show or set default backend
+dgmt config tz [<IANA-zone>] [--list]   # Show or set timezone
 
 # Calendar
-dgmt cal              # Launch interactive TUI
-dgmt cal auth         # Run Google OAuth flow
-dgmt cal auth revoke  # Revoke stored token
-dgmt cal list [--date DATE] [--days N]
-dgmt cal add "Summary" --start "2026-03-11 10:00" [--end "..."] [--color Peacock]
+dgmt cal                                # Launch interactive TUI
+dgmt cal auth                           # Run Google OAuth flow
+dgmt cal auth revoke                    # Revoke stored token
+dgmt cal list [--date DATE] [--days N] [--format table|md|json]
+dgmt cal add "Summary" --start "2026-03-11 10:00" [--end "..."] [--color Peacock] [--recurrence weekly]
 dgmt cal edit EVENT_ID [--summary ...] [--start ...] [--color ...]
 dgmt cal delete EVENT_ID
 dgmt cal view [--daily|--weekly|--monthly] [--date DATE]
@@ -97,7 +103,36 @@ dgmt cal calendars
 dgmt cal colors                         # List rules and available colors
 dgmt cal colors add "pattern" --color Peacock
 dgmt cal colors remove "pattern"
+
+# Canvas (LMS assignment tracking via .ics)
+dgmt canvas auth set [--url URL]        # Configure Canvas .ics URL
+dgmt canvas auth revoke                 # Forget stored URL
+dgmt canvas fetch                       # Force-refresh from feed
+dgmt canvas list [--course CIS4930] [--date YYYY-MM-DD] [--format table|md|json]
+dgmt canvas complete "HW5" ["Quiz 3" ...]   # Mark one or more done (UID or fuzzy match)
+dgmt canvas uncomplete "HW5" ...        # Unmark
+dgmt canvas courses                     # List detected courses
+
+# AI integration (MCP)
+dgmt mcp install [--force]              # Register as Claude Desktop MCP server
+dgmt mcp serve                          # Run the stdio MCP server
 ```
+
+### Cross-device config sync
+
+`dgmt remote push-config` sends a sanitized copy of `~/.dgmt/config.json`
+from the hub to each enabled spoke over SSH. The hub-specific sections
+(`backends`, `hub.watch_paths`) are stripped, so only portable settings
+travel — color rules, calendar defaults, canvas keywords/aliases, log level.
+
+```bash
+dgmt remote push-config            # All enabled spokes
+dgmt remote push-config webserver  # One spoke
+```
+
+Spokes still need their own credentials:
+- Google OAuth token at `~/.dgmt/tokens/google_calendar_token.json`
+- Canvas `.ics` URL at the path in `canvas.ics_url_file`
 
 ## Configuration
 
@@ -145,7 +180,18 @@ dgmt cal colors remove "pattern"
     "color_rules": [
       {"pattern": "Meeting", "color_id": "7", "case_sensitive": false}
     ]
-  }
+  },
+  "canvas": {
+    "enabled": false,
+    "ics_url_file": "~/.dgmt/secrets/canvas_ics_url",
+    "fetch_interval_seconds": 900,
+    "cache_file": "~/.dgmt/cache/canvas_assignments.json",
+    "completion_file": "~/.dgmt/state/canvas_completed.json",
+    "lookahead_days": 30,
+    "course_aliases": {},
+    "assignment_keywords": ["assignment", "quiz", "exam", "..."]
+  },
+  "timezone": "America/New_York"
 }
 ```
 
@@ -163,6 +209,13 @@ dgmt cal colors remove "pattern"
 | `calendar.default_calendar_id` | Google Calendar ID to use |
 | `calendar.default_view` | TUI default: `daily`, `weekly`, or `monthly` |
 | `calendar.color_rules` | Auto-color events by summary pattern |
+| `canvas.ics_url_file` | File holding the private Canvas `.ics` URL |
+| `canvas.fetch_interval_seconds` | Cache TTL before refetching the feed |
+| `canvas.cache_file` | Parsed-assignment cache location |
+| `canvas.completion_file` | Per-machine completion state (push-syncable) |
+| `canvas.assignment_keywords` | Substrings that mark a VEVENT as an assignment |
+| `canvas.course_aliases` | Map raw course codes to display codes |
+| `timezone` | IANA timezone for date parsing (e.g. `America/Chicago`) |
 
 **Hot reload**: The daemon watches `config.json` and applies changes automatically. No restart required.
 
@@ -202,6 +255,41 @@ dgmt cal colors add "Meeting" --color Peacock
 dgmt cal colors add "Gym" --color Basil
 dgmt cal colors remove "Meeting"
 ```
+
+## Canvas Assignments
+
+`dgmt canvas` reads your Canvas LMS calendar via its private `.ics`
+subscription feed — no Canvas API token required.
+
+### Setup
+
+1. In Canvas: `Account` → `Settings` → scroll to `Calendar Feed`, copy the URL
+2. `dgmt canvas auth set` and paste it (stored under
+   `~/.dgmt/secrets/canvas_ics_url`)
+3. `dgmt canvas list` — assignments are pulled, parsed, and cached for
+   `canvas.fetch_interval_seconds` (15 min default)
+
+Course codes are extracted from event summaries (bracketed like
+`[CIS4930-0001.sp26]` or bare like `CIS4930`). Use `canvas.course_aliases`
+to remap them.
+
+Completion is local — `dgmt canvas complete "HW5" "Quiz 3"` marks one or
+more assignments done in `~/.dgmt/state/canvas_completed.json`. That file
+is portable; pushing it (or syncing it via Syncthing) shares completion
+state across machines.
+
+## MCP Server (AI Integration)
+
+`dgmt mcp serve` starts a stdio MCP server exposing the calendar/canvas
+tools to Claude Desktop. `dgmt mcp install` writes the right entry into
+your platform's `claude_desktop_config.json`.
+
+```bash
+dgmt mcp install            # adds server to Claude Desktop
+dgmt mcp install --force    # overwrite existing entry
+```
+
+Restart Claude Desktop after install.
 
 ## Fluent Configuration API
 
